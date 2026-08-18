@@ -49,12 +49,77 @@ The app refuses to start without a valid `SECRET_KEY` — that is deliberate.
 docker compose up --build     # API on :8000, MongoDB on :27017
 ```
 
+### Seeding the first administrator
+
+```bash
+python scripts/seed.py                       # generates and prints a password once
+python scripts/seed.py --email you@acme.com --password "Str0ngPass"
+```
+
+Idempotent — it does nothing if an administrator already exists, unless `--force`.
+
 ## Tests
 
 ```bash
-pytest          # no live MongoDB required
+pytest          # database-backed tests skip themselves if MongoDB is not running
 ruff check .
 ```
+
+## API
+
+All paths are prefixed with `API_PREFIX` (default `/api/v1`).
+
+### Auth
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| POST | `/auth/invite` | admin | Invite an employee; emails a one-time link |
+| GET | `/auth/invite/{token}` | public | Preview an invitation before accepting |
+| POST | `/auth/accept-invite` | public | Set password, complete profile, sign in |
+| GET | `/auth/invites` | admin | List invitations |
+| DELETE | `/auth/invites/{id}` | admin | Revoke a pending invitation |
+| POST | `/auth/login` | public | Sign in |
+| POST | `/auth/refresh` | public | Rotate the token pair |
+| POST | `/auth/logout` | employee | Sign out of this or every device |
+| GET | `/auth/me` | employee | The signed-in account |
+| PATCH | `/auth/me` | employee | Update own profile |
+| POST | `/auth/change-password` | employee | Change password |
+| POST | `/auth/forgot-password` | public | Request a reset link |
+| POST | `/auth/reset-password` | public | Set a new password from a link |
+
+### Users
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| GET | `/users` | admin | List employees (`search`, `role`, `status`, `department`, paginated) |
+| GET | `/users/departments` | employee | Distinct department names |
+| GET | `/users/{id}` | admin | One employee |
+| PATCH | `/users/{id}` | admin | Update an employee |
+| POST | `/users/{id}/suspend` | admin | Suspend and revoke their sessions |
+| POST | `/users/{id}/activate` | admin | Reinstate |
+| DELETE | `/users/{id}` | admin | Soft delete |
+
+### Security behaviour worth knowing
+
+- **Refresh rotation with reuse detection.** Each refresh issues a new token and
+  revokes the old one. Presenting an already-rotated token means it leaked, so
+  the whole token family is revoked and the user must sign in again.
+- **No account enumeration.** Sign-in and forgot-password answer identically
+  whether or not the address exists.
+- **Suspension and password changes revoke sessions immediately**, rather than
+  waiting for the access token to expire.
+- **Tokens are stored as digests.** Invite, reset and refresh tokens exist in
+  plaintext only in the email or the client.
+- **Rate limiting is per process** (`app/core/rate_limit.py`). Running multiple
+  workers behind a load balancer needs a shared store — swap the backend, the
+  call signature stays.
+- **The last active administrator cannot be suspended or deleted.**
+
+### Email in development
+
+`EMAIL_PROVIDER=console` prints each email — including the full invite and reset
+links — to the log instead of sending it. The invite response also returns
+`invite_url`, so an admin is never stuck when mail is not configured.
 
 ## Response envelope
 

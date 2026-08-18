@@ -5,7 +5,7 @@ the schemas in ``app/schemas`` which describe what crosses the API boundary — 
 two are allowed to drift, and mixing them is how internal fields leak out.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, TypeVar
 
 from bson import ObjectId
@@ -43,12 +43,31 @@ class MongoModel(BaseModel):
 
     def to_mongo(self, *, exclude_none: bool = False) -> dict[str, Any]:
         """Serialise for insertion. ``_id`` is left to MongoDB when unset."""
-        document = self.model_dump(by_alias=True, exclude_none=exclude_none)
+        document = encode_for_mongo(
+            self.model_dump(by_alias=True, exclude_none=exclude_none)
+        )
         if document.get("_id") is None:
             document.pop("_id", None)
         else:
             document["_id"] = ObjectId(document["_id"])
         return document
+
+
+def encode_for_mongo(value: Any) -> Any:
+    """BSON has no ``date`` type — store plain dates as ``YYYY-MM-DD`` strings.
+
+    Datetimes are left alone (BSON stores them natively) and are always UTC by
+    the time they get here.
+    """
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: encode_for_mongo(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [encode_for_mongo(item) for item in value]
+    return value
 
 
 ModelT = TypeVar("ModelT", bound=MongoModel)
