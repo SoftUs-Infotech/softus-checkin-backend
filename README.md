@@ -99,6 +99,48 @@ All paths are prefixed with `API_PREFIX` (default `/api/v1`).
 | POST | `/users/{id}/activate` | admin | Reinstate |
 | DELETE | `/users/{id}` | admin | Soft delete |
 
+### Configuration
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| GET | `/shifts` | employee | List shifts with assigned headcount |
+| POST | `/shifts` | admin | Create a shift |
+| GET · PATCH · DELETE | `/shifts/{id}` | admin (GET: employee) | Manage one shift |
+| POST | `/shifts/{id}/assign` | admin | Assign employees to a shift |
+| GET | `/holidays` | employee | Calendar, filtered by year or date range |
+| GET | `/holidays/upcoming` | employee | Next few holidays, for the dashboard |
+| POST | `/holidays` · `/holidays/bulk` | admin | Add one or a whole year |
+| PATCH · DELETE | `/holidays/{id}` | admin | Maintain a holiday |
+| GET | `/leave-types` | employee | Types available when applying |
+| POST | `/leave-types` | admin | Introduce a new kind of leave |
+| GET · PATCH · DELETE | `/leave-types/{id}` | admin (GET: employee) | Manage a type |
+| GET | `/settings` | employee | Organisation policy |
+| PATCH | `/settings` | admin | Update policy |
+| GET | `/audit-logs` | admin | Who changed what, when |
+
+**Shifts decide what a full day means.** Required minutes, half-day threshold,
+grace, break deduction and working weekdays are all per-shift data, assigned per
+employee with one org default. The attendance engine reads whatever is stored —
+changing "nine hours" to "eight" is an admin action, not a deployment.
+
+Rules the service enforces:
+
+- Exactly one shift is the default; promoting one demotes the rest.
+- The default shift cannot be deleted or deactivated.
+- A shift with employees on it cannot be deleted — move them first.
+- `half_day_minutes` must be below `required_minutes`, on create and on update.
+- A shift whose end time is at or before its start time is a night shift, and is
+  reported with `crosses_midnight: true`.
+
+**Leave types are data.** Introducing a new kind of leave is a row, never a code
+change. A type that no request references is deleted outright; one that is
+referenced is deactivated instead, so historical requests keep resolving to the
+policy they were made under.
+
+**The audit trail is append-only.** Every administrative mutation records actor,
+IP, and only the fields that actually changed. Password hashes and token digests
+are stripped before writing. A no-op update writes nothing.
+
 ### Security behaviour worth knowing
 
 - **Refresh rotation with reuse detection.** Each refresh issues a new token and

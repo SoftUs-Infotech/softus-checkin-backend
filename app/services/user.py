@@ -12,10 +12,13 @@ from pymongo.errors import DuplicateKeyError
 from app.core.datetime import utc_now
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.mongo import Collections, get_collection
+from app.models.audit_log import AuditAction, AuditEntity
 from app.models.base import encode_for_mongo, serialize
 from app.models.user import UserStatus
 from app.schemas.common import PaginationParams
 from app.schemas.user import UserListFilters
+from app.services import audit
+from app.services.audit import Actor
 
 
 def _users():
@@ -86,9 +89,11 @@ async def list_departments() -> list[str]:
 # --------------------------------------------------------------------------- #
 # writes
 # --------------------------------------------------------------------------- #
-async def update_user(user_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+async def update_user(
+    user_id: str, changes: dict[str, Any], actor: Actor | None = None
+) -> dict[str, Any]:
     """Apply a partial update. ``changes`` has already dropped unset fields."""
-    await require_user(user_id)
+    existing = await require_user(user_id)
 
     payload = {key: value for key, value in changes.items() if value is not None}
     if not payload:
@@ -115,10 +120,23 @@ async def update_user(user_id: str, changes: dict[str, Any]) -> dict[str, Any]:
             code="DUPLICATE_EMPLOYEE_CODE",
         ) from exc
 
-    return await require_user(user_id)
+    updated = await require_user(user_id)
+    if actor is not None:
+        await audit.record_change(
+            actor,
+            AuditAction.UPDATE,
+            AuditEntity.USER,
+            entity_id=user_id,
+            entity_label=updated.get("email"),
+            before=existing,
+            after=updated,
+        )
+    return updated
 
 
-async def set_status(user_id: str, status: UserStatus) -> dict[str, Any]:
+async def set_status(
+    user_id: str, status: UserStatus, actor: Actor | None = None
+) -> dict[str, Any]:
     user = await require_user(user_id)
     if user["status"] == status.value:
         return user
@@ -135,10 +153,24 @@ async def set_status(user_id: str, status: UserStatus) -> dict[str, Any]:
         await _refresh_tokens().update_many(
             {"user_id": user_id, "revoked_at": None}, {"$set": {"revoked_at": utc_now()}}
         )
-    return await require_user(user_id)
+
+    updated = await require_user(user_id)
+    if actor is not None:
+        await audit.record(
+            actor,
+            AuditAction.SUSPEND if status is UserStatus.SUSPENDED else AuditAction.ACTIVATE,
+            AuditEntity.USER,
+            entity_id=user_id,
+            entity_label=updated.get("email"),
+            before={"status": user["status"]},
+            after={"status": status.value},
+        )
+    return updated
 
 
-async def soft_delete(user_id: str, *, acting_admin_id: str) -> None:
+async def soft_delete(
+    user_id: str, *, acting_admin_id: str, actor: Actor | None = None
+) -> None:
     if user_id == acting_admin_id:
         raise ValidationError("You cannot remove your own account.", code="CANNOT_DELETE_SELF")
 
@@ -157,6 +189,15 @@ async def soft_delete(user_id: str, *, acting_admin_id: str) -> None:
     await _refresh_tokens().update_many(
         {"user_id": user_id, "revoked_at": None}, {"$set": {"revoked_at": utc_now()}}
     )
+    if actor is not None:
+        await audit.record(
+            actor,
+            AuditAction.DELETE,
+            AuditEntity.USER,
+            entity_id=user_id,
+            entity_label=user.get("email"),
+            before=user,
+        )
 
 
 async def _guard_last_admin(user: dict[str, Any]) -> None:

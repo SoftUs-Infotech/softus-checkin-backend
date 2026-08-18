@@ -42,6 +42,41 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("token_hash", ASCENDING)], unique=True, name="uniq_reset_token"),
         IndexModel([("expires_at", ASCENDING)], expireAfterSeconds=0, name="reset_ttl"),
     ],
+    Collections.SHIFTS: [
+        IndexModel(
+            [("code", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"is_deleted": False},
+            name="uniq_shift_code",
+        ),
+        IndexModel([("is_default", DESCENDING), ("is_active", DESCENDING)], name="shift_default"),
+    ],
+    Collections.HOLIDAYS: [
+        IndexModel(
+            [("date", ASCENDING), ("name", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"is_deleted": False},
+            name="uniq_holiday_date_name",
+        ),
+        IndexModel([("year", ASCENDING), ("date", ASCENDING)], name="holiday_year"),
+    ],
+    Collections.LEAVE_TYPES: [
+        IndexModel(
+            [("code", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"is_deleted": False},
+            name="uniq_leave_type_code",
+        ),
+        IndexModel([("sort_order", ASCENDING), ("name", ASCENDING)], name="leave_type_order"),
+    ],
+    Collections.SETTINGS: [
+        IndexModel([("key", ASCENDING)], unique=True, name="uniq_settings_key"),
+    ],
+    Collections.AUDIT_LOGS: [
+        IndexModel([("at", DESCENDING)], name="audit_recent"),
+        IndexModel([("entity", ASCENDING), ("entity_id", ASCENDING)], name="audit_entity"),
+        IndexModel([("actor_id", ASCENDING), ("at", DESCENDING)], name="audit_actor"),
+    ],
 }
 
 

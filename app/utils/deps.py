@@ -15,6 +15,7 @@ from app.core.security import decode_token
 from app.models.user import UserRole, UserStatus
 from app.schemas.common import PaginationParams
 from app.services import user as user_service
+from app.services.audit import Actor
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -66,7 +67,16 @@ def get_client_ip(request: Request) -> str:
     return getattr(request.state, "client_ip", "unknown")
 
 
+async def get_actor(
+    request: Request,
+    current_user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> Actor:
+    """Who is performing this request, for the audit trail."""
+    return Actor.from_user(current_user, get_client_ip(request))
+
+
 CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
 CurrentAdmin = Annotated[dict[str, Any], Depends(get_current_admin)]
 Pagination = Annotated[PaginationParams, Depends(get_pagination)]
 ClientIP = Annotated[str, Depends(get_client_ip)]
+CurrentActor = Annotated[Actor, Depends(get_actor)]

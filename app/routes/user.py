@@ -8,7 +8,7 @@ from app.models.user import UserRole, UserStatus
 from app.schemas.common import PaginatedData
 from app.schemas.user import UserAdminUpdate, UserListFilters, UserOut
 from app.services import user as user_service
-from app.utils.deps import CurrentAdmin, CurrentUser, Pagination
+from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser, Pagination
 from app.utils.response import success
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -47,24 +47,28 @@ async def get_user(user_id: str, _: CurrentAdmin) -> dict:
 
 
 @router.patch("/{user_id}", summary="Update an employee")
-async def update_user(user_id: str, payload: UserAdminUpdate, _: CurrentAdmin) -> dict:
-    updated = await user_service.update_user(user_id, payload.model_dump(exclude_unset=True))
+async def update_user(
+    user_id: str, payload: UserAdminUpdate, _: CurrentAdmin, actor: CurrentActor
+) -> dict:
+    updated = await user_service.update_user(
+        user_id, payload.model_dump(exclude_unset=True), actor
+    )
     return success(UserOut.from_document(updated), message="Employee updated.")
 
 
 @router.post("/{user_id}/suspend", summary="Suspend an employee")
-async def suspend_user(user_id: str, _: CurrentAdmin) -> dict:
-    updated = await user_service.set_status(user_id, UserStatus.SUSPENDED)
+async def suspend_user(user_id: str, _: CurrentAdmin, actor: CurrentActor) -> dict:
+    updated = await user_service.set_status(user_id, UserStatus.SUSPENDED, actor)
     return success(UserOut.from_document(updated), message="Employee suspended.")
 
 
 @router.post("/{user_id}/activate", summary="Reinstate a suspended employee")
-async def activate_user(user_id: str, _: CurrentAdmin) -> dict:
-    updated = await user_service.set_status(user_id, UserStatus.ACTIVE)
+async def activate_user(user_id: str, _: CurrentAdmin, actor: CurrentActor) -> dict:
+    updated = await user_service.set_status(user_id, UserStatus.ACTIVE, actor)
     return success(UserOut.from_document(updated), message="Employee reinstated.")
 
 
 @router.delete("/{user_id}", summary="Remove an employee (soft delete)")
-async def delete_user(user_id: str, admin: CurrentAdmin) -> dict:
-    await user_service.soft_delete(user_id, acting_admin_id=admin["id"])
+async def delete_user(user_id: str, admin: CurrentAdmin, actor: CurrentActor) -> dict:
+    await user_service.soft_delete(user_id, acting_admin_id=admin["id"], actor=actor)
     return success(message="Employee removed.")

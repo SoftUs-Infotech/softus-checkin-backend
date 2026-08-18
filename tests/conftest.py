@@ -32,6 +32,7 @@ from app.db import mongo  # noqa: E402
 from app.db.indexes import create_indexes  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services import auth as auth_service  # noqa: E402
+from app.services import settings as settings_service  # noqa: E402
 
 ADMIN_EMAIL = "admin@example.com"
 ADMIN_PASSWORD = "AdminPass123"
@@ -68,9 +69,13 @@ async def db():
     for name in await database.list_collection_names():
         await database.drop_collection(name)
     await create_indexes()
+    # The settings singleton is cached in-process; a dropped database must not
+    # leave a stale copy behind for the next test.
+    settings_service.clear_cache()
 
     yield database
 
+    settings_service.clear_cache()
     await mongo.close_mongo_connection()
 
 
