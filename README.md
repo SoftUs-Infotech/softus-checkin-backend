@@ -52,10 +52,32 @@ docker compose up --build     # API on :8000, MongoDB on :27017
 
 ```bash
 python scripts/seed.py                       # generates and prints a password once
-python scripts/seed.py --email you@acme.com --password "Str0ngPass"
+python scripts/seed.py --email you@yourcompany.com   # same, for your own address
 ```
 
 Idempotent — it does nothing if an administrator already exists, unless `--force`.
+
+### Setting administrators on any database (including the live one)
+
+```bash
+cp scripts/admins.local.example.json scripts/admins.local.json   # gitignored
+# write the admins' email, password, first_name, last_name into it
+python scripts/set_admins.py
+```
+
+It writes to whatever `MONGO_URI` / `MONGO_DB` in `.env` point at. Put the live
+Atlas URI there to set up production from your own machine. Before writing, it
+shows the server (password hidden) and the database, and waits for you to type
+the database name. For each entry:
+
+- a new email becomes an active administrator;
+- an existing account is made an administrator, reinstated if suspended or
+  removed, and given the file's password, which signs it out everywhere.
+
+A fresh database also gets its settings, default shift and leave types. Every
+change appears in the Audit trail. Nothing is emailed, and `.env` needs no
+`SECRET_KEY` for this. `admins.local.json` holds real passwords: it is ignored
+by git, but delete it once the admins can sign in.
 
 ### Seeding a demo organisation
 
@@ -64,8 +86,7 @@ python scripts/seed_demo.py                  # add demo data alongside what exis
 python scripts/seed_demo.py --reset          # drop the database first
 ```
 
-Creates an administrator and four employees with published passwords, then
-back-fills six weeks of attendance so every calendar colour appears. It also
+Creates an administrator and four employees, then back-fills six weeks of attendance so every calendar colour appears. It also
 seeds the things the newer screens need in order to show anything: salaries
 (including one employee deliberately left without one, so the warning is
 visible), a Saturday swap and a hand-closed day with the comp-offs they
@@ -76,16 +97,8 @@ corrections, leave and tasks to try bulk approval on.
 The administrator is seeded unable to punch, which is the default for the role —
 that is what makes the admin and employee halves of the application differ.
 
-| Role | Email | Password |
-|---|---|---|
-| Administrator | `admin@softus.io` | `Admin@1234` |
-| Employee | `riya@softus.io` | `Employee@123` |
-| Employee | `arjun@softus.io` | `Employee@123` |
-| Employee | `sana@softus.io` | `Employee@123` |
-| Employee | `vikram@softus.io` | `Employee@123` |
-
-**Demo only.** These passwords are in the repository — never run this against a
-real database.
+**Local demos only.** The demo accounts share fixed passwords, so it refuses to
+run when `ENVIRONMENT=production`. Never point it at a real database.
 
 ## Deploying
 

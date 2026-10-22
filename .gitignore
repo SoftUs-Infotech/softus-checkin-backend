@@ -22,3 +22,6 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Real administrator credentials for scripts/set_admins.py — never committed.
+scripts/admins.local.json

@@ -1,0 +1,11 @@
+{
+  "_readme": "Copy this file to admins.local.json (gitignored) and replace the example. Then run: python scripts/set_admins.py",
+  "admins": [
+    {
+      "email": "you@yourcompany.com",
+      "password": "Choose-A-Strong-Password-1",
+      "first_name": "Your",
+      "last_name": "Name"
+    }
+  ]
+}
