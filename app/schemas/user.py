@@ -7,9 +7,9 @@ the model and can never appear here.
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models.user import UserRole, UserStatus
+from app.models.user import UserRole, UserStatus, may_punch
 
 
 class UserProfileUpdate(BaseModel):
@@ -27,17 +27,24 @@ class UserAdminUpdate(UserProfileUpdate):
 
     employee_code: str | None = Field(default=None, max_length=40)
     role: UserRole | None = None
+
+    # A shift is assigned for a stretch of work, so it carries a window. Both
+    # dates absent means the assignment simply runs until it is changed.
     shift_id: str | None = None
+    shift_from: date | None = None
+    shift_to: date | None = None
     reporting_manager_id: str | None = None
     joining_date: date | None = None
     notes: str | None = Field(default=None, max_length=2000)
 
-    @field_validator("role")
-    @classmethod
-    def _manager_role_is_reserved(cls, value: UserRole | None) -> UserRole | None:
-        if value == UserRole.MANAGER:
-            raise ValueError("The MANAGER role is reserved and cannot be assigned yet.")
-        return value
+    # An administrator is an overseer by default; a working admin gets the
+    # personal side of the app back with this.
+    can_punch: bool | None = None
+
+    # Work from home lifts the office-network restriction for this person only.
+    wfh_enabled: bool | None = None
+    wfh_from: date | None = None
+    wfh_to: date | None = None
 
 
 class UserOut(BaseModel):
@@ -55,9 +62,15 @@ class UserOut(BaseModel):
     role: UserRole
     status: UserStatus
     shift_id: str | None = None
+    shift_from: date | None = None
+    shift_to: date | None = None
     reporting_manager_id: str | None = None
     joining_date: date | None = None
     profile_completed: bool = False
+    can_punch: bool = True
+    wfh_enabled: bool = False
+    wfh_from: date | None = None
+    wfh_to: date | None = None
     last_login_at: datetime | None = None
     created_at: datetime | None = None
 
@@ -67,6 +80,9 @@ class UserOut(BaseModel):
         first = data.get("first_name") or ""
         last = data.get("last_name") or ""
         data["full_name"] = f"{first} {last}".strip() or data.get("email", "")
+        # Not `data.get("can_punch", True)`: an account created before the flag
+        # existed has no value, and an administrator must not inherit "yes".
+        data["can_punch"] = may_punch(data)
         return cls.model_validate(data)
 
 

@@ -8,9 +8,11 @@ env/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 logs/
 *.log
+boot.err
 
 .pytest_cache/
 .ruff_cache/

@@ -22,7 +22,15 @@ from app.schemas.common import PaginationParams
 logger = get_logger(__name__)
 
 # Never copied into an audit row, however the caller passes them in.
-_REDACTED_FIELDS = {"hashed_password", "token_hash", "password", "new_password"}
+_REDACTED_FIELDS = {
+    "hashed_password",
+    "token_hash",
+    "password",
+    "new_password",
+    # A two-factor secret and its recovery hashes are credentials: an audit
+    # trail that records them turns the log into a way in.
+    "two_factor",
+}
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,7 +5,8 @@ has a single thing to mirror.
 """
 
 import re
-from datetime import date
+from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -48,13 +49,6 @@ class InviteCreate(BaseModel):
     shift_id: str | None = None
     reporting_manager_id: str | None = None
     joining_date: date | None = None
-
-    @field_validator("role")
-    @classmethod
-    def _manager_role_is_reserved(cls, value: UserRole) -> UserRole:
-        if value == UserRole.MANAGER:
-            raise ValueError("The MANAGER role is reserved and cannot be assigned yet.")
-        return value
 
 
 class InviteOut(BaseModel):
@@ -121,6 +115,50 @@ class ChangePasswordRequest(BaseModel):
     @classmethod
     def _check_password(cls, value: str) -> str:
         return validate_password_strength(value)
+
+
+class TwoFactorChallengeOut(BaseModel):
+    """What ``/auth/login`` returns instead of tokens when 2FA is switched on.
+
+    ``two_factor_required`` is a constant rather than something the client has to
+    infer from a missing ``tokens`` key.
+    """
+
+    two_factor_required: Literal[True] = True
+    challenge_token: str
+    expires_in: int
+
+
+class TwoFactorVerifyRequest(BaseModel):
+    challenge_token: str
+    # Wide enough for a recovery code, which is offered in place of the digits.
+    code: str = Field(min_length=1, max_length=64)
+
+
+class TwoFactorCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=10)
+
+
+class TwoFactorDisableRequest(BaseModel):
+    # The password, not just a session: a borrowed unlocked laptop must not be
+    # enough to take the second factor back off.
+    password: str
+
+
+class TwoFactorSetupOut(BaseModel):
+    """Returned exactly once, by setup. Nothing here is retrievable afterwards."""
+
+    secret: str
+    otpauth_uri: str
+    recovery_codes: list[str]
+
+
+class TwoFactorStatus(BaseModel):
+    enabled: bool
+    #: A secret has been generated but no code has confirmed it yet.
+    pending: bool = False
+    confirmed_at: datetime | None = None
+    recovery_codes_remaining: int = 0
 
 
 class ForgotPasswordRequest(BaseModel):

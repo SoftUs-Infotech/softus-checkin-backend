@@ -1,4 +1,4 @@
-﻿"""Account lifecycle: invite â†’ accept â†’ sign in â†’ rotate â†’ sign out, and passwords."""
+"""Account lifecycle: invite → accept → sign in → rotate → sign out, and passwords."""
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -89,11 +89,14 @@ async def test_inviting_an_already_active_employee_is_rejected(admin_client, api
     assert duplicate.json()["error"]["code"] == "EMAIL_ALREADY_REGISTERED"
 
 
-async def test_the_manager_role_cannot_be_assigned_yet(admin_client, api_prefix):
+async def test_somebody_can_be_invited_straight_in_as_a_manager(admin_client, api_prefix):
+    """The role used to be reserved; approvals route through it now."""
     response = await admin_client.post(
         f"{api_prefix}/auth/invite", json={"email": "boss@example.com", "role": "MANAGER"}
     )
-    assert response.status_code == 422
+
+    assert response.status_code == 201, response.text
+    assert response.json()["data"]["role"] == "MANAGER"
 
 
 async def test_an_unknown_invite_token_is_not_found(admin_client, api_prefix):
@@ -195,7 +198,7 @@ async def test_reusing_a_rotated_refresh_token_kills_the_whole_family(client, ad
     assert replayed.status_code == 401
     assert replayed.json()["error"]["code"] == "TOKEN_REUSE_DETECTED"
 
-    # The still-current token is collateral damage â€” that is the point.
+    # The still-current token is collateral damage — that is the point.
     after = await client.post(f"{api_prefix}/auth/refresh", json={"refresh_token": second})
     assert after.status_code == 401
 
@@ -330,6 +333,30 @@ async def test_forgot_password_does_not_reveal_whether_an_account_exists(
 
     assert known.status_code == unknown.status_code == 200
     assert known.json()["message"] == unknown.json()["message"]
+
+
+async def test_forgot_password_does_not_wait_on_the_mail_server(
+    client, admin, api_prefix, monkeypatch
+):
+    # A real account used to answer only after the SMTP round trip, an unknown
+    # address at once — the timing alone said which addresses had accounts.
+    import asyncio
+    import time
+
+    from app.utils.email import get_email_provider
+
+    async def slow_send(message):
+        await asyncio.sleep(2)
+
+    monkeypatch.setattr(get_email_provider(), "send", slow_send)
+
+    started = time.perf_counter()
+    response = await client.post(
+        f"{api_prefix}/auth/forgot-password", json={"email": ADMIN_EMAIL}
+    )
+
+    assert response.status_code == 200
+    assert time.perf_counter() - started < 1
 
 
 async def test_a_reset_link_sets_a_new_password_and_works_only_once(client, admin, api_prefix, db):

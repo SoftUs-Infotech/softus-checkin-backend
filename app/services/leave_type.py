@@ -16,7 +16,7 @@ from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.mongo import Collections, get_collection
 from app.models.audit_log import AuditAction, AuditEntity
 from app.models.base import serialize
-from app.models.leave_type import LeaveType
+from app.models.leave_type import LeaveType, annual_quota_for, resolve_accrual_policy
 from app.schemas.leave_type import LeaveTypeCreate, LeaveTypeUpdate
 from app.services import audit
 from app.services.audit import Actor
@@ -81,6 +81,17 @@ async def update_leave_type(
     }
     if not changes:
         return existing
+
+    if "accrual" in changes:
+        # An accrual change may arrive as a bare frequency string; store the
+        # resolved policy, and keep the displayed annual quota in step with it
+        # unless the same request sets one explicitly.
+        policy = resolve_accrual_policy(
+            {"accrual": changes["accrual"], "annual_quota": changes.get("annual_quota")
+             or existing.get("annual_quota", 0)}
+        )
+        changes["accrual"] = policy.model_dump()
+        changes.setdefault("annual_quota", annual_quota_for(policy))
 
     merged = {**existing, **changes}
     if merged["carry_forward_max"] > merged["annual_quota"]:

@@ -1,0 +1,22 @@
+{
+	# Let's Encrypt writes here about expiring certificates.
+	email {$ACME_EMAIL}
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy api:8000 {
+		# Replace, never append. Whatever X-Forwarded-For the caller sent is
+		# their own text, and the office-network punch rule reads this header:
+		# passing it through would let anybody claim the office's address.
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}

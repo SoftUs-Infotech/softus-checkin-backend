@@ -18,6 +18,10 @@ from app.schemas.auth import (
     LogoutRequest,
     RefreshRequest,
     ResetPasswordRequest,
+    TwoFactorChallengeOut,
+    TwoFactorCodeRequest,
+    TwoFactorDisableRequest,
+    TwoFactorVerifyRequest,
 )
 from app.schemas.user import UserOut, UserProfileUpdate
 from app.services import auth as auth_service
@@ -75,10 +79,12 @@ async def revoke_invite(invite_id: str, _: CurrentAdmin) -> dict:
 # --------------------------------------------------------------------------- #
 @router.post("/login", summary="Sign in")
 async def login(payload: LoginRequest, request: Request) -> dict:
-    session = await auth_service.login(
+    result = await auth_service.login(
         payload.email, payload.password, user_agent=_agent(request), ip=_ip(request)
     )
-    return success(session, message="Signed in.")
+    if isinstance(result, TwoFactorChallengeOut):
+        return success(result, message="Enter the code from your authenticator app.")
+    return success(result, message="Signed in.")
 
 
 @router.post("/refresh", summary="Exchange a refresh token for a new pair")
@@ -100,6 +106,47 @@ async def logout(
         all_devices=payload.all_devices,
     )
     return success(message="Signed out.")
+
+
+# --------------------------------------------------------------------------- #
+# two-factor authentication — administrators only
+# --------------------------------------------------------------------------- #
+@router.get("/2fa", summary="Whether two-factor authentication is on")
+async def two_factor_status(admin: CurrentAdmin) -> dict:
+    return success(auth_service.two_factor_status(admin))
+
+
+@router.post("/2fa/setup", summary="Generate a secret and recovery codes")
+async def two_factor_setup(admin: CurrentAdmin) -> dict:
+    setup = await auth_service.start_two_factor_setup(admin)
+    return success(
+        setup,
+        message="Scan the code, then confirm. Save the recovery codes — "
+        "they are not shown again.",
+    )
+
+
+@router.post("/2fa/confirm", summary="Switch two-factor authentication on")
+async def two_factor_confirm(payload: TwoFactorCodeRequest, admin: CurrentAdmin) -> dict:
+    status_out = await auth_service.confirm_two_factor(admin["id"], payload.code)
+    return success(status_out, message="Two-factor authentication is on.")
+
+
+@router.post("/2fa/disable", summary="Switch two-factor authentication off")
+async def two_factor_disable(payload: TwoFactorDisableRequest, admin: CurrentAdmin) -> dict:
+    status_out = await auth_service.disable_two_factor(admin["id"], payload.password)
+    return success(status_out, message="Two-factor authentication is off.")
+
+
+@router.post("/2fa/verify", summary="Finish a sign-in with a code (public)")
+async def two_factor_verify(payload: TwoFactorVerifyRequest, request: Request) -> dict:
+    session = await auth_service.verify_two_factor(
+        payload.challenge_token,
+        payload.code,
+        user_agent=_agent(request),
+        ip=_ip(request),
+    )
+    return success(session, message="Signed in.")
 
 
 # --------------------------------------------------------------------------- #

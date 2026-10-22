@@ -1,0 +1,6 @@
+# Everything the API needs, plus the test and lint tools. Production images
+# install requirements.txt only.
+-r requirements.txt
+pytest==8.3.4
+pytest-asyncio==0.25.0
+ruff==0.8.4

@@ -1,4 +1,4 @@
-﻿"""Seed a fresh database so a clone is usable immediately.
+"""Seed a fresh database so a clone is usable immediately.
 
     python scripts/seed.py
     python scripts/seed.py --email admin@acme.com --password "Str0ngPass" --force

@@ -4,19 +4,54 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models.leave_type import AccrualPeriod
+from app.models.leave_type import (
+    AccrualFrequency,
+    AccrualPolicy,
+    AccrualTiming,
+    annual_quota_for,
+    resolve_accrual_policy,
+)
 
 CODE_PATTERN = re.compile(r"^[A-Z0-9_]{2,20}$")
 COLOR_PATTERN = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 
+class AccrualPolicyIn(BaseModel):
+    frequency: AccrualFrequency = AccrualFrequency.YEARLY
+    amount_per_cycle: float = Field(default=0, ge=0, le=365)
+    credit_at: AccrualTiming = AccrualTiming.START
+    lapse_at_year_end: bool = True
+
+
+class AccrualPolicyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    frequency: AccrualFrequency
+    amount_per_cycle: float
+    credit_at: AccrualTiming
+    lapse_at_year_end: bool
+
+
+#: A bare frequency string is still accepted so callers written against the
+#: original two-value accrual keep working; it is translated the same way a
+#: stored legacy document is.
+AccrualIn = AccrualPolicyIn | AccrualFrequency
+
+
+def _as_policy(value: AccrualIn | None, annual_quota: float) -> AccrualPolicy:
+    if isinstance(value, AccrualPolicyIn):
+        return AccrualPolicy.model_validate(value.model_dump())
+    return resolve_accrual_policy({"accrual": value, "annual_quota": annual_quota})
+
+
 class LeaveTypeBase(BaseModel):
     name: str = Field(min_length=2, max_length=60)
     annual_quota: float = Field(default=0, ge=0, le=365)
-    accrual: AccrualPeriod = AccrualPeriod.YEARLY
+    accrual: AccrualIn | None = None
     is_paid: bool = True
     requires_approval: bool = True
     allow_half_day: bool = True
+    allow_negative_balance: bool = False
     carry_forward_max: float = Field(default=0, ge=0, le=365)
     min_notice_days: int = Field(default=0, ge=0, le=365)
     max_consecutive_days: int | None = Field(default=None, ge=1, le=365)
@@ -47,6 +82,11 @@ class LeaveTypeCreate(LeaveTypeBase):
 
     @model_validator(mode="after")
     def _carry_forward_within_quota(self) -> "LeaveTypeCreate":
+        # A policy given without a quota implies one, and carry-forward is
+        # judged against that rather than against a zero nobody entered.
+        policy = _as_policy(self.accrual, self.annual_quota)
+        self.accrual = AccrualPolicyIn.model_validate(policy.model_dump())
+        self.annual_quota = self.annual_quota or annual_quota_for(policy)
         if self.carry_forward_max > self.annual_quota:
             raise ValueError(
                 "Carry-forward cannot exceed the annual quota for this leave type."
@@ -57,10 +97,11 @@ class LeaveTypeCreate(LeaveTypeBase):
 class LeaveTypeUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=60)
     annual_quota: float | None = Field(default=None, ge=0, le=365)
-    accrual: AccrualPeriod | None = None
+    accrual: AccrualIn | None = None
     is_paid: bool | None = None
     requires_approval: bool | None = None
     allow_half_day: bool | None = None
+    allow_negative_balance: bool | None = None
     carry_forward_max: float | None = Field(default=None, ge=0, le=365)
     min_notice_days: int | None = Field(default=None, ge=0, le=365)
     max_consecutive_days: int | None = Field(default=None, ge=1, le=365)
@@ -88,10 +129,11 @@ class LeaveTypeOut(BaseModel):
     name: str
     code: str
     annual_quota: float
-    accrual: AccrualPeriod
+    accrual: AccrualPolicyOut
     is_paid: bool
     requires_approval: bool
     allow_half_day: bool
+    allow_negative_balance: bool = False
     carry_forward_max: float
     min_notice_days: int
     max_consecutive_days: int | None = None
@@ -104,4 +146,7 @@ class LeaveTypeOut(BaseModel):
 
     @classmethod
     def from_document(cls, document: dict) -> "LeaveTypeOut":
-        return cls.model_validate(document)
+        # Legacy documents store a frequency string where the policy now lives.
+        return cls.model_validate(
+            {**document, "accrual": resolve_accrual_policy(document)}
+        )

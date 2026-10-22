@@ -1,0 +1,5 @@
+# Scripts and config run on Linux servers: keep LF however the repo is cloned.
+*.sh text eol=lf
+Caddyfile text eol=lf
+*.yml text eol=lf
+Dockerfile text eol=lf

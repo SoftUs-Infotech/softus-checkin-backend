@@ -26,6 +26,13 @@ INDEXES: dict[str, list[IndexModel]] = {
         ),
         IndexModel([("role", ASCENDING), ("status", ASCENDING)], name="role_status"),
         IndexModel([("reporting_manager_id", ASCENDING)], name="reporting_manager"),
+        # Two-factor verification looks an account up by its pending challenge.
+        # Partial, because only a handful of accounts hold one at any moment.
+        IndexModel(
+            [("two_factor.challenge.token_hash", ASCENDING)],
+            partialFilterExpression={"two_factor.challenge.token_hash": {"$type": "string"}},
+            name="two_factor_challenge",
+        ),
     ],
     Collections.INVITES: [
         IndexModel([("token_hash", ASCENDING)], unique=True, name="uniq_invite_token"),
@@ -71,6 +78,93 @@ INDEXES: dict[str, list[IndexModel]] = {
     ],
     Collections.SETTINGS: [
         IndexModel([("key", ASCENDING)], unique=True, name="uniq_settings_key"),
+    ],
+    Collections.WORK_CALENDAR: [
+        # One ruling per date: working or off.
+        IndexModel([("date", ASCENDING)], unique=True, name="uniq_work_calendar_date"),
+        IndexModel([("swap_with_date", ASCENDING)], name="work_calendar_swap"),
+    ],
+    Collections.COMP_OFFS: [
+        IndexModel([("user_id", ASCENDING), ("status", ASCENDING)], name="comp_off_user_status"),
+        IndexModel([("expires_on", ASCENDING)], name="comp_off_expiry"),
+    ],
+    Collections.SALARIES: [
+        # A history, not a field on the user: a raise must not erase what the
+        # employee was paid before it.
+        IndexModel(
+            [("user_id", ASCENDING), ("effective_from", DESCENDING)],
+            unique=True,
+            name="uniq_salary_user_effective",
+        ),
+    ],
+    Collections.SALARY_ADJUSTMENTS: [
+        IndexModel(
+            [("user_id", ASCENDING), ("apply_month", ASCENDING)],
+            name="salary_adjustment_user_month",
+        ),
+        IndexModel([("source_date", ASCENDING)], name="salary_adjustment_source"),
+    ],
+    Collections.GEOCODE_CACHE: [
+        IndexModel([("key", ASCENDING)], unique=True, name="uniq_geocode_key"),
+        IndexModel([("expires_at", ASCENDING)], expireAfterSeconds=0, name="geocode_ttl"),
+    ],
+    Collections.ATTENDANCE: [
+        # One document per employee per day. This is the guard that makes a
+        # double submission impossible rather than merely unlikely.
+        IndexModel(
+            [("user_id", ASCENDING), ("date", ASCENDING)],
+            unique=True,
+            name="uniq_attendance_user_day",
+        ),
+        IndexModel([("date", ASCENDING), ("status", ASCENDING)], name="attendance_day_status"),
+        IndexModel([("user_id", ASCENDING), ("date", DESCENDING)], name="attendance_history"),
+    ],
+    Collections.PUNCH_REQUESTS: [
+        IndexModel(
+            [("user_id", ASCENDING), ("request_key", ASCENDING)],
+            unique=True,
+            name="uniq_punch_request",
+        ),
+        IndexModel([("expires_at", ASCENDING)], expireAfterSeconds=0, name="punch_request_ttl"),
+    ],
+    Collections.CORRECTIONS: [
+        IndexModel([("user_id", ASCENDING), ("date", ASCENDING)], name="correction_user_day"),
+        IndexModel([("status", ASCENDING), ("created_at", DESCENDING)], name="correction_queue"),
+    ],
+    Collections.TASKS: [
+        IndexModel([("user_id", ASCENDING), ("date", DESCENDING)], name="task_user_day"),
+        IndexModel([("status", ASCENDING), ("date", DESCENDING)], name="task_queue"),
+        # Carry-forward asks "what was still open on this day", which is a scan
+        # of unfinished work per employee unless completion is indexed too.
+        IndexModel(
+            [("user_id", ASCENDING), ("completed_on", ASCENDING)],
+            name="task_user_completion",
+        ),
+    ],
+    Collections.LEAVE_REQUESTS: [
+        IndexModel([("user_id", ASCENDING), ("status", ASCENDING)], name="leave_user_status"),
+        IndexModel([("status", ASCENDING), ("created_at", DESCENDING)], name="leave_queue"),
+        IndexModel([("days.date", ASCENDING), ("status", ASCENDING)], name="leave_by_day"),
+    ],
+    Collections.LEAVE_BALANCES: [
+        IndexModel(
+            [("user_id", ASCENDING), ("leave_type_id", ASCENDING), ("year", ASCENDING)],
+            unique=True,
+            name="uniq_leave_balance",
+        ),
+    ],
+    Collections.ANNOUNCEMENTS: [
+        IndexModel(
+            [("is_published", DESCENDING), ("pinned", DESCENDING), ("created_at", DESCENDING)],
+            name="announcement_feed",
+        ),
+        IndexModel([("type", ASCENDING), ("event_date", ASCENDING)], name="announcement_events"),
+    ],
+    Collections.NOTIFICATIONS: [
+        IndexModel(
+            [("user_id", ASCENDING), ("read_at", ASCENDING), ("created_at", DESCENDING)],
+            name="notification_inbox",
+        ),
     ],
     Collections.AUDIT_LOGS: [
         IndexModel([("at", DESCENDING)], name="audit_recent"),

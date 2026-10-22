@@ -1,0 +1,90 @@
+# Production stack for one EC2 instance: the API behind Caddy, which obtains and
+# renews the HTTPS certificate on its own.
+#
+#   cd deploy
+#   cp .env.production.example .env.production   # then fill it in
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# MongoDB is expected to be Atlas (MONGO_URI in .env.production). To run it on
+# the same instance instead, add `--profile local-mongo` to every command.
+
+name: softus-checkin
+
+services:
+  api:
+    build:
+      context: ..
+    image: softus-checkin-api:latest
+    restart: unless-stopped
+    env_file: .env.production
+    depends_on:
+      # Only when the local-mongo profile is on; with Atlas there is nothing
+      # to wait for and `required: false` skips it.
+      mongo:
+        condition: service_healthy
+        required: false
+    environment:
+      ENVIRONMENT: production
+      # Caddy's fixed address below. The office-network rule believes a
+      # forwarded client address only from this hop.
+      TRUSTED_PROXIES: 172.30.0.10
+    expose:
+      - "8000"
+    volumes:
+      - api_logs:/app/logs
+    networks:
+      edge:
+        ipv4_address: 172.30.0.20
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    env_file: .env.production
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      edge:
+        ipv4_address: 172.30.0.10
+    logging: *logging
+
+  mongo:
+    profiles: ["local-mongo"]
+    image: mongo:7
+    restart: unless-stopped
+    env_file: .env.production
+    # No published port: only the API, on this private network, can reach it.
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *logging
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  api_logs:
+  caddy_data:
+  caddy_config:
+  mongo_data:

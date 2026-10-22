@@ -1,0 +1,26 @@
+# Secrets never enter an image. The running container gets its settings from
+# the environment (deploy/.env.production), not from a file baked in at build.
+.env
+.env.*
+!.env.example
+
+# Local tooling and state
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+logs/
+*.log
+boot.err
+
+# Not needed to run the API
+tests/
+deploy/
+docs/
+Dockerfile
+docker-compose*.yml
+requirements-dev.txt
+.git/
+.gitignore
+.dockerignore

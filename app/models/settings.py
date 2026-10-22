@@ -6,9 +6,20 @@ give two sources of truth for which calendar day a punch belongs to. The API
 exposes it read-only.
 """
 
+from enum import StrEnum
+
 from pydantic import Field
 
 from app.models.base import MongoModel
+
+
+class SalaryDayBasis(StrEnum):
+    """What one day of pay is worth."""
+
+    WORKING_DAYS = "WORKING_DAYS"  # month total / working days that month
+    CALENDAR_DAYS = "CALENDAR_DAYS"  # month total / days in the month
+    FIXED_26 = "FIXED_26"
+    FIXED_30 = "FIXED_30"
 
 SETTINGS_KEY = "organisation"
 
@@ -39,5 +50,41 @@ class OrgSettings(MongoModel):
 
     # Leave policy.
     leave_year_start_month: int = Field(default=1, ge=1, le=12)
+
+    # Punching, and filing a correction, may be restricted to the office
+    # network. The allowlist holds plain addresses or CIDR ranges; an empty
+    # list means the check cannot pass, so enforcement stays off until an
+    # administrator has entered at least one.
+    enforce_office_network_for_punch: bool = False
+    enforce_office_network_for_corrections: bool = False
+    office_ip_ranges: list[str] = Field(default_factory=list)
+
+    # Where the office is. A punch further than the radius is flagged, never
+    # blocked — a bad GPS fix must not cost somebody their attendance.
+    office_latitude: float | None = Field(default=None, ge=-90, le=90)
+    office_longitude: float | None = Field(default=None, ge=-180, le=180)
+    office_radius_metres: int = Field(default=200, ge=10, le=20000)
+
+    # Lateness with consequences: this many late arrivals in a month cost half
+    # a day. Zero switches the policy off.
+    late_arrivals_per_half_day: int = Field(default=0, ge=0, le=31)
+
+    # How far back an approval may reach and still adjust pay.
+    retro_approval_months: int = Field(default=3, ge=0, le=24)
+
+    # Salary.
+    salary_day_basis: SalaryDayBasis = SalaryDayBasis.WORKING_DAYS
+    salary_deduct_absent: bool = True
+    salary_deduct_unpaid_leave: bool = True
+    salary_deduct_half_day: bool = True
+    salary_deduct_missing_punch_out: bool = False
+
+    # Which Saturdays of the month the office is open — 1 means the first
+    # Saturday. The fifth is deliberately tri-state: often it is decided late.
+    working_saturdays: list[int] = Field(default_factory=lambda: [2, 4])
+    fifth_saturday_working: bool | None = None
+
+    # Comp-off earned when a worked day is later swapped off.
+    comp_off_expiry_days: int = Field(default=90, ge=0, le=730)
 
     support_email: str | None = None

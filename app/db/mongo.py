@@ -22,6 +22,7 @@ class Collections:
     PASSWORD_RESETS = "password_resets"
     SHIFTS = "shifts"
     ATTENDANCE = "attendance"
+    PUNCH_REQUESTS = "punch_requests"
     CORRECTIONS = "corrections"
     TASKS = "tasks"
     LEAVE_TYPES = "leave_types"
@@ -32,6 +33,11 @@ class Collections:
     NOTIFICATIONS = "notifications"
     AUDIT_LOGS = "audit_logs"
     SETTINGS = "settings"
+    WORK_CALENDAR = "work_calendar"
+    COMP_OFFS = "comp_offs"
+    SALARIES = "salaries"
+    SALARY_ADJUSTMENTS = "salary_adjustments"
+    GEOCODE_CACHE = "geocode_cache"
 
 
 class _MongoState:
@@ -51,6 +57,12 @@ async def connect_to_mongo() -> None:
         settings.MONGO_URI,
         serverSelectionTimeoutMS=5000,
         uuidRepresentation="standard",
+        # BSON has no timezone; without this, every datetime comes back naive
+        # and is serialised as `2026-09-02T04:45:45` with nothing to say it is
+        # UTC. A browser then reads it as local time and a punch at 10:15 IST
+        # renders as 04:45. Reading them back aware is the fix at the source —
+        # every route, every schema, one setting.
+        tz_aware=True,
     )
     await client.admin.command("ping")
 

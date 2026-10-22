@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.core.logging import get_logger
+from app.utils import network
 
 logger = get_logger("app.access")
 
@@ -47,11 +48,12 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP, honouring a single upstream proxy."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
-    return request.client.host if request.client else "unknown"
+    """The caller's address. One definition, shared with the office gate.
+
+    This used to be a second, subtly different copy of the same logic. The
+    address the audit trail records and the address the allowlist judges have
+    to be the same one, or an administrator reading the log cannot tell why a
+    punch was refused — and the copy here trusted forwarding headers from
+    anybody, which is what made the gate bypassable.
+    """
+    return network.client_ip(request)

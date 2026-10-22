@@ -1,6 +1,6 @@
 """Organisation settings and the audit trail."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.models.audit_log import AuditAction, AuditEntity
 from app.schemas.audit import AuditLogOut
@@ -9,6 +9,7 @@ from app.schemas.settings import OrgSettingsOut, OrgSettingsUpdate
 from app.services import audit as audit_service
 from app.services import settings as settings_service
 from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser, Pagination
+from app.utils.network import client_ip, network_view
 from app.utils.response import success
 
 router = APIRouter(tags=["settings"])
@@ -17,6 +18,19 @@ router = APIRouter(tags=["settings"])
 @router.get("/settings", summary="Organisation settings")
 async def get_settings(_: CurrentUser) -> dict:
     return success(OrgSettingsOut.from_document(await settings_service.get_settings()))
+
+
+@router.get("/settings/network", summary="The office network, seen from this request")
+async def network_check(request: Request, _: CurrentAdmin) -> dict:
+    """The address this service judges the caller by, and whether it is allowed.
+
+    An administrator standing on the office Wi-Fi opens this to find out what to
+    put in the allowlist. Reporting it from the API rather than sending them to
+    a "what is my IP" site matters: with a proxy in front, the address the site
+    shows them and the address the allowlist compares are different, and pasting
+    the wrong one locks the office out of punching.
+    """
+    return success(await network_view(client_ip(request)))
 
 
 @router.patch("/settings", summary="Update organisation settings")

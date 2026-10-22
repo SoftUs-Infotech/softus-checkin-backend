@@ -8,12 +8,13 @@ Two invariants this module owns:
 * A shift that employees are assigned to cannot be deleted out from under them.
 """
 
+from datetime import date, datetime
 from typing import Any
 
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
-from app.core.datetime import utc_now
+from app.core.datetime import date_key, org_today, utc_now
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.mongo import Collections, get_collection
 from app.models.audit_log import AuditAction, AuditEntity
@@ -62,8 +63,32 @@ async def get_default_shift() -> dict[str, Any] | None:
     return serialize(document)
 
 
-async def count_assigned(shift_id: str) -> int:
-    return await _users().count_documents({"shift_id": shift_id, "is_deleted": False})
+async def count_assigned(shift_id: str, *, on: date | None = None) -> int:
+    """How many people this shift is still spoken for by.
+
+    Now that an assignment carries a window, "is anybody on this shift" and "does
+    anybody's row still point at it" are different questions. A window that ended
+    in March does not put somebody on the shift today, and counting it both
+    overstated the figure on the card and refused a deletion nobody was relying
+    on any more.
+
+    A window that has not started yet *does* count: somebody is scheduled onto
+    this shift next month, and deleting it out from under that plan is exactly
+    what this guard exists to prevent.
+    """
+    today = date_key(on or org_today())
+    return await _users().count_documents(
+        {
+            "shift_id": shift_id,
+            "is_deleted": False,
+            # Open-ended, or ending today or later.
+            "$or": [
+                {"shift_to": None},
+                {"shift_to": {"$exists": False}},
+                {"shift_to": {"$gte": today}},
+            ],
+        }
+    )
 
 
 async def _clear_other_defaults(keep_id: ObjectId) -> None:
@@ -217,10 +242,68 @@ async def assign_shift(shift_id: str, payload: ShiftAssign, actor: Actor) -> dic
     return {"shift_id": shift_id, "assigned": result.modified_count}
 
 
-async def resolve_for_user(user: dict[str, Any]) -> dict[str, Any] | None:
-    """The shift an employee is measured against — theirs, else the default."""
+def assignment_active(user: dict[str, Any], on: date) -> bool:
+    """Is this employee's shift assignment live on ``on``?
+
+    A shift is assigned for a stretch of work — "the general shift for these two
+    weeks" — so it has a window. Absent dates mean open-ended, which is both how
+    a standing assignment is expressed and how every account written before the
+    window existed behaves.
+    """
+    if not user.get("shift_id"):
+        return False
+
+    day = date_key(on)
+    starts = _as_date_key(user.get("shift_from"))
+    ends = _as_date_key(user.get("shift_to"))
+
+    started = not starts or starts <= day
+    not_finished = not ends or day <= ends
+    return started and not_finished
+
+
+def _as_date_key(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value[:10] or None
+    if isinstance(value, date | datetime):
+        return date_key(value)
+    return None
+
+
+def assignment_lapsed(user: dict[str, Any], on: date) -> bool:
+    """Was this employee planned onto a shift whose window has since run out?
+
+    Deliberately narrower than "has no active assignment". Somebody who was
+    never assigned a shift is not a lapse — they are an organisation that does
+    not plan work this way, and flagging every one of their days would fill the
+    exception feed with a fact the administrator already knows.
+
+    A *lapse* is the thing worth chasing: a window was planned, it has ended,
+    and the person is still turning up — which is exactly the case this feature
+    was asked for. "My expectation was to finish within these five days, and it
+    is already over."
+    """
+    if not user.get("shift_id"):
+        return False
+    ends = _as_date_key(user.get("shift_to"))
+    return bool(ends) and ends < date_key(on)
+
+
+async def resolve_for_user(
+    user: dict[str, Any], *, on: date | None = None
+) -> dict[str, Any] | None:
+    """The shift an employee is measured against — theirs, else the default.
+
+    The default shift is what *timings* fall back to, and it always exists, so
+    the day can still be judged. Whether the employee has an assignment of their
+    own is a separate question, asked through ``assignment_active`` — a missing
+    assignment must never stop somebody punching, it is a planning signal for
+    the administrator.
+    """
     shift_id = user.get("shift_id")
-    if shift_id and ObjectId.is_valid(shift_id):
+    if shift_id and ObjectId.is_valid(shift_id) and assignment_active(user, on or org_today()):
         document = await _shifts().find_one({"_id": ObjectId(shift_id), "is_deleted": False})
         if document is not None:
             return serialize(document)

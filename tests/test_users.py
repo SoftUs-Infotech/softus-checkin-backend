@@ -1,4 +1,4 @@
-﻿"""Employee administration: listing, updating, suspending, removing."""
+"""Employee administration: listing, updating, suspending, removing."""
 
 import pytest
 from httpx import ASGITransport, AsyncClient

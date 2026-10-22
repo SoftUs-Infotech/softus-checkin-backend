@@ -10,11 +10,17 @@ Two deliberate behaviours worth knowing:
   leaked, so the entire family is killed and the user must sign in again.
 * **No account enumeration.** Sign-in and forgot-password give the same answer
   whether or not the email exists.
+* **Two factors for administrators.** An administrator who has switched 2FA on
+  gets a short-lived challenge from ``login`` instead of tokens; the tokens are
+  only minted once ``verify_two_factor`` sees a code. Employees never meet any
+  of this — only an administrator can reach the setup endpoint.
 """
 
+import secrets
 from datetime import datetime, timedelta
 from typing import Any
 
+import pyotp
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
@@ -41,16 +47,28 @@ from app.core.security import (
 from app.db.mongo import Collections, get_collection
 from app.models.base import serialize
 from app.models.invite import Invite, InviteStatus, PasswordReset, RefreshToken
-from app.models.user import User, UserRole, UserStatus
+from app.models.user import (
+    TwoFactor,
+    TwoFactorChallenge,
+    User,
+    UserRole,
+    UserStatus,
+    default_can_punch,
+    two_factor_of,
+    two_factor_required,
+)
 from app.schemas.auth import (
     AuthSession,
     InviteAccept,
     InviteCreate,
     InvitePreview,
     TokenPair,
+    TwoFactorChallengeOut,
+    TwoFactorSetupOut,
+    TwoFactorStatus,
 )
 from app.schemas.user import UserOut
-from app.utils.email import send_email
+from app.utils.email import send_email, send_email_later
 from app.utils.email.templates import (
     invite_email,
     password_changed_email,
@@ -262,7 +280,7 @@ async def accept_invite(payload: InviteAccept, *, user_agent: str, ip: str) -> A
     )
 
     user = serialize(await _users().find_one({"_id": user_id}))
-    await send_email(welcome_email(to=user["email"], name=payload.first_name))
+    send_email_later(welcome_email(to=user["email"], name=payload.first_name))
     logger.info("Invitation accepted by %s", user["email"])
 
     return await _issue_session(user, user_agent=user_agent, ip=ip)
@@ -320,7 +338,9 @@ async def _issue_session(
     )
 
 
-async def login(email: str, password: str, *, user_agent: str, ip: str) -> AuthSession:
+async def login(
+    email: str, password: str, *, user_agent: str, ip: str
+) -> AuthSession | TwoFactorChallengeOut:
     normalised = email.strip().lower()
     rate_limit.hit("login", f"{ip}:{normalised}", rate_limit.LOGIN)
 
@@ -347,6 +367,13 @@ async def login(email: str, password: str, *, user_agent: str, ip: str) -> AuthS
         )
 
     rate_limit.reset("login", f"{ip}:{normalised}")
+
+    if two_factor_required(user):
+        # The password was right, so the counter is cleared above; what is *not*
+        # cleared is the verify counter, which is what caps guessing the digits.
+        logger.info("Sign-in for %s awaits a second factor", normalised)
+        return await _issue_challenge(user)
+
     await _users().update_one(
         {"_id": ObjectId(user["id"])}, {"$set": {"last_login_at": utc_now()}}
     )
@@ -418,6 +445,262 @@ async def logout(*, user_id: str, refresh_token: str | None, all_devices: bool) 
 
 
 # --------------------------------------------------------------------------- #
+# two-factor authentication
+# --------------------------------------------------------------------------- #
+#: Recovery codes are read off a screen and typed back in under stress, so the
+#: alphabet leaves out the characters people confuse: O/0, I/1, S/5, B/8.
+_RECOVERY_ALPHABET = "ACDEFGHJKLMNPQRTUVWXYZ2346789"
+_RECOVERY_GROUP = 5
+
+
+def _issuer() -> str:
+    return settings.TWO_FACTOR_ISSUER or settings.APP_NAME
+
+
+def _generate_recovery_code() -> str:
+    def group() -> str:
+        return "".join(secrets.choice(_RECOVERY_ALPHABET) for _ in range(_RECOVERY_GROUP))
+
+    return f"{group()}-{group()}"
+
+
+def _normalise_recovery(code: str) -> str:
+    """Accept whatever the user typed: spacing and case are not the secret."""
+    return "".join(code.split()).upper()
+
+
+def _match_recovery(code: str, stored_hashes: list[str]) -> str | None:
+    """The stored digest this code answers to, or ``None``."""
+    candidate = hash_token(_normalise_recovery(code))
+    for stored in stored_hashes:
+        if secrets.compare_digest(candidate, stored):
+            return stored
+    return None
+
+
+def _verify_totp(secret: str, code: str, *, last_used_step: int | None) -> int | None:
+    """The 30-second step this code belongs to, or ``None`` if it is no good.
+
+    Codes are checked a step either side of now so that a phone whose clock has
+    drifted still works, and a step at or below the last accepted one is refused
+    outright — otherwise the same six digits would keep working for the ninety
+    seconds they remain mathematically valid.
+    """
+    digits = "".join(code.split())
+    if not digits.isdigit() or len(digits) != 6:
+        return None
+
+    totp = pyotp.TOTP(secret)
+    now = utc_now()
+    window = max(settings.TWO_FACTOR_TIME_WINDOW, 0)
+    for offset in range(-window, window + 1):
+        moment = now + timedelta(seconds=30 * offset)
+        if secrets.compare_digest(totp.at(moment), digits):
+            step = int(moment.timestamp()) // 30
+            if last_used_step is not None and step <= last_used_step:
+                return None
+            return step
+    return None
+
+
+def _status_of(state: dict[str, Any]) -> TwoFactorStatus:
+    return TwoFactorStatus(
+        enabled=bool(state.get("enabled")),
+        pending=bool(state.get("secret")) and not state.get("enabled"),
+        confirmed_at=state.get("confirmed_at"),
+        recovery_codes_remaining=len(state.get("recovery_code_hashes") or []),
+    )
+
+
+async def _load_user(user_id: str) -> dict[str, Any]:
+    user = serialize(await _users().find_one({"_id": ObjectId(user_id), "is_deleted": False}))
+    if user is None:
+        raise NotFoundError("This user account no longer exists.", code="USER_NOT_FOUND")
+    return user
+
+
+def two_factor_status(user: dict[str, Any]) -> TwoFactorStatus:
+    return _status_of(two_factor_of(user))
+
+
+async def start_two_factor_setup(user: dict[str, Any]) -> TwoFactorSetupOut:
+    """Generate a secret and recovery codes. Nothing is switched on yet."""
+    state = two_factor_of(user)
+    if state.get("enabled"):
+        raise ConflictError(
+            "Two-factor authentication is already on. Turn it off before setting it up again.",
+            code="TWO_FACTOR_ALREADY_ENABLED",
+        )
+
+    secret = pyotp.random_base32()
+    codes = [_generate_recovery_code() for _ in range(settings.TWO_FACTOR_RECOVERY_CODES)]
+    fresh = TwoFactor(
+        secret=secret,
+        recovery_code_hashes=[hash_token(code) for code in codes],
+    )
+    await _users().update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$set": {"two_factor": fresh.model_dump(), "updated_at": utc_now()}},
+    )
+
+    uri = pyotp.TOTP(secret).provisioning_uri(name=user["email"], issuer_name=_issuer())
+    logger.info("Two-factor setup started for %s", user["email"])
+    # The only time the plaintext exists on this side of the wire.
+    return TwoFactorSetupOut(secret=secret, otpauth_uri=uri, recovery_codes=codes)
+
+
+async def confirm_two_factor(user_id: str, code: str) -> TwoFactorStatus:
+    """Switch 2FA on, but only once a code proves the secret arrived intact."""
+    rate_limit.hit("two_factor_confirm", user_id, rate_limit.LOGIN)
+    user = await _load_user(user_id)
+    state = two_factor_of(user)
+
+    if state.get("enabled"):
+        raise ConflictError(
+            "Two-factor authentication is already on.", code="TWO_FACTOR_ALREADY_ENABLED"
+        )
+    if not state.get("secret"):
+        raise ConflictError(
+            "Start the setup first, then confirm with a code from your app.",
+            code="TWO_FACTOR_NOT_STARTED",
+        )
+
+    step = _verify_totp(state["secret"], code, last_used_step=state.get("last_used_step"))
+    if step is None:
+        raise ValidationError(
+            "That code is not valid. Check your authenticator app and try again.",
+            code="INVALID_TWO_FACTOR_CODE",
+        )
+
+    now = utc_now()
+    await _users().update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "two_factor.enabled": True,
+                "two_factor.confirmed_at": now,
+                "two_factor.last_used_step": step,
+                "updated_at": now,
+            }
+        },
+    )
+    logger.info("Two-factor authentication enabled for %s", user["email"])
+    return _status_of({**state, "enabled": True, "confirmed_at": now})
+
+
+async def disable_two_factor(user_id: str, password: str) -> TwoFactorStatus:
+    """Turn 2FA off and forget the secret and every recovery code."""
+    rate_limit.hit("two_factor_disable", user_id, rate_limit.LOGIN)
+    user = await _load_user(user_id)
+
+    if not verify_password(password, user.get("hashed_password") or ""):
+        raise ValidationError("Your password is incorrect.", code="INCORRECT_PASSWORD")
+
+    await _users().update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"two_factor": TwoFactor().model_dump(), "updated_at": utc_now()}},
+    )
+    logger.info("Two-factor authentication disabled for %s", user["email"])
+    return _status_of({})
+
+
+async def _issue_challenge(user: dict[str, Any]) -> TwoFactorChallengeOut:
+    """Hand back a receipt for a sign-in that is halfway through.
+
+    One pending challenge per account: starting a second sign-in abandons the
+    first, which is the behaviour somebody who retries on another device expects.
+    """
+    token = generate_token()
+    challenge = TwoFactorChallenge(
+        token_hash=hash_token(token),
+        expires_at=utc_now()
+        + timedelta(minutes=settings.TWO_FACTOR_CHALLENGE_EXPIRE_MINUTES),
+        password_fingerprint=hash_token(user["hashed_password"]),
+    )
+    await _users().update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$set": {"two_factor.challenge": challenge.model_dump(), "updated_at": utc_now()}},
+    )
+    return TwoFactorChallengeOut(
+        challenge_token=token,
+        expires_in=settings.TWO_FACTOR_CHALLENGE_EXPIRE_MINUTES * 60,
+    )
+
+
+async def verify_two_factor(
+    challenge_token: str, code: str, *, user_agent: str, ip: str
+) -> AuthSession:
+    """Trade a challenge plus a code — or a recovery code — for the real tokens."""
+    token_hash = hash_token(challenge_token)
+    stale = AuthenticationError(
+        "This sign-in is no longer valid. Enter your password again.",
+        code="TWO_FACTOR_CHALLENGE_INVALID",
+    )
+
+    user = serialize(
+        await _users().find_one(
+            {"two_factor.challenge.token_hash": token_hash, "is_deleted": False}
+        )
+    )
+    if user is None:
+        raise stale
+
+    rate_limit.hit("two_factor_verify", f"{ip}:{user['id']}", rate_limit.LOGIN)
+
+    state = two_factor_of(user)
+    challenge = state.get("challenge") or {}
+    # A password change rewrites the hash this was minted against, so a challenge
+    # left open on another machine dies with the old password.
+    fingerprint = hash_token(user.get("hashed_password") or "")
+    if _expired(challenge["expires_at"]) or challenge.get("password_fingerprint") != fingerprint:
+        await _clear_challenge(user["id"])
+        raise stale
+    if user.get("status") != UserStatus.ACTIVE:
+        await _clear_challenge(user["id"])
+        raise PermissionDeniedError("This account is not active.", code="ACCOUNT_NOT_ACTIVE")
+
+    now = utc_now()
+    consumed: dict[str, Any] = {"last_login_at": now, "updated_at": now}
+    step = _verify_totp(state.get("secret") or "", code, last_used_step=state.get("last_used_step"))
+    if step is not None:
+        consumed["two_factor.last_used_step"] = step
+    else:
+        used = _match_recovery(code, state.get("recovery_code_hashes") or [])
+        if used is None:
+            # The challenge survives, so a fat-fingered code is a retry rather
+            # than a trip back to the password screen.
+            raise AuthenticationError(
+                "That code is not valid.", code="INVALID_TWO_FACTOR_CODE"
+            )
+        consumed["two_factor.recovery_code_hashes"] = [
+            stored for stored in state["recovery_code_hashes"] if stored != used
+        ]
+        logger.warning("Recovery code used to sign in as %s", user["email"])
+
+    # Filtering on the challenge hash is what makes it single-use: a second
+    # request carrying the same token finds nothing left to consume.
+    result = await _users().update_one(
+        {
+            "_id": ObjectId(user["id"]),
+            "two_factor.challenge.token_hash": token_hash,
+        },
+        {"$set": consumed, "$unset": {"two_factor.challenge": ""}},
+    )
+    if result.matched_count == 0:
+        raise stale
+
+    rate_limit.reset("two_factor_verify", f"{ip}:{user['id']}")
+    logger.info("Sign-in completed with a second factor for %s", user["email"])
+    return await _issue_session(user, user_agent=user_agent, ip=ip)
+
+
+async def _clear_challenge(user_id: str) -> None:
+    await _users().update_one(
+        {"_id": ObjectId(user_id)}, {"$unset": {"two_factor.challenge": ""}}
+    )
+
+
+# --------------------------------------------------------------------------- #
 # passwords
 # --------------------------------------------------------------------------- #
 async def change_password(user_id: str, current_password: str, new_password: str) -> None:
@@ -442,7 +725,7 @@ async def change_password(user_id: str, current_password: str, new_password: str
     await _refresh_tokens().update_many(
         {"user_id": user_id, "revoked_at": None}, {"$set": {"revoked_at": utc_now()}}
     )
-    await send_email(password_changed_email(to=user["email"], name=_display_name(user)))
+    send_email_later(password_changed_email(to=user["email"], name=_display_name(user)))
 
 
 async def forgot_password(email: str, *, ip: str) -> None:
@@ -464,7 +747,7 @@ async def forgot_password(email: str, *, ip: str) -> None:
     await _password_resets().insert_one(reset.to_mongo())
 
     reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password?token={token}"
-    await send_email(
+    send_email_later(
         password_reset_email(
             to=user["email"],
             name=_display_name(user),
@@ -496,27 +779,52 @@ async def reset_password(token: str, new_password: str) -> None:
     await _refresh_tokens().update_many(
         {"user_id": str(user["_id"]), "revoked_at": None}, {"$set": {"revoked_at": now}}
     )
-    await send_email(password_changed_email(to=user["email"], name=_display_name(user)))
+    send_email_later(password_changed_email(to=user["email"], name=_display_name(user)))
     logger.info("Password reset completed for %s", user["email"])
+
+
+async def create_active_user(
+    *,
+    email: str,
+    password: str,
+    first_name: str,
+    last_name: str = "",
+    role: UserRole = UserRole.EMPLOYEE,
+    **profile: Any,
+) -> dict[str, Any]:
+    """Create an already-activated account, skipping the invitation flow.
+
+    Only for seeding: the normal way in is an invitation, which is what makes an
+    employee choose their own password.
+    """
+    normalised = email.strip().lower()
+    if await _users().find_one({"email": normalised}):
+        raise ConflictError("An account with that email already exists.")
+
+    user = User(
+        email=normalised,
+        hashed_password=hash_password(password),
+        first_name=first_name,
+        last_name=last_name,
+        role=role,
+        can_punch=default_can_punch(role),
+        status=UserStatus.ACTIVE,
+        profile_completed=True,
+        activated_at=utc_now(),
+        **profile,
+    )
+    result = await _users().insert_one(user.to_mongo())
+    return serialize(await _users().find_one({"_id": result.inserted_id}))
 
 
 async def bootstrap_admin(
     *, email: str, password: str, first_name: str, last_name: str
 ) -> dict[str, Any]:
     """Create the very first administrator. Used by the seed script only."""
-    normalised = email.strip().lower()
-    if await _users().find_one({"email": normalised}):
-        raise ConflictError("An account with that email already exists.")
-
-    admin = User(
-        email=normalised,
-        hashed_password=hash_password(password),
+    return await create_active_user(
+        email=email,
+        password=password,
         first_name=first_name,
         last_name=last_name,
         role=UserRole.ADMIN,
-        status=UserStatus.ACTIVE,
-        profile_completed=True,
-        activated_at=utc_now(),
     )
-    result = await _users().insert_one(admin.to_mongo())
-    return serialize(await _users().find_one({"_id": result.inserted_id}))

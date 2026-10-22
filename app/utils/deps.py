@@ -52,6 +52,22 @@ async def get_current_admin(
     return current_user
 
 
+async def get_current_approver(
+    current_user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    """Admins and reporting managers — the two roles that decide requests.
+
+    The gate only says "you approve *something*". Which people are in scope is a
+    question about the request being decided, so it is answered in the service
+    that has the request in hand, not here.
+    """
+    if current_user.get("role") not in (UserRole.ADMIN, UserRole.MANAGER):
+        raise PermissionDeniedError(
+            "This action is restricted to administrators and reporting managers."
+        )
+    return current_user
+
+
 def get_pagination(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -77,6 +93,7 @@ async def get_actor(
 
 CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
 CurrentAdmin = Annotated[dict[str, Any], Depends(get_current_admin)]
+CurrentApprover = Annotated[dict[str, Any], Depends(get_current_approver)]
 Pagination = Annotated[PaginationParams, Depends(get_pagination)]
 ClientIP = Annotated[str, Depends(get_client_ip)]
 CurrentActor = Annotated[Actor, Depends(get_actor)]
