@@ -19,6 +19,7 @@ from app.core.exceptions import (
 from app.db.mongo import Collections, get_collection
 from app.models.audit_log import AuditAction, AuditEntity
 from app.models.base import encode_for_mongo, serialize
+from app.models.invite import InviteStatus
 from app.models.user import UserRole, UserStatus
 from app.schemas.common import PaginationParams
 from app.schemas.user import UserListFilters
@@ -307,6 +308,16 @@ async def soft_delete(
     )
     await _refresh_tokens().update_many(
         {"user_id": user_id, "revoked_at": None}, {"$set": {"revoked_at": utc_now()}}
+    )
+    # Somebody removed before they accepted still holds a working link in their
+    # inbox. Without this, following it reactivated the account and signed them
+    # in — a removed administrator invite was a way back into the system.
+    await get_collection(Collections.INVITES).update_many(
+        {
+            "user_id": {"$in": [ObjectId(user_id), user_id]},
+            "status": InviteStatus.PENDING.value,
+        },
+        {"$set": {"status": InviteStatus.REVOKED.value, "revoked_at": utc_now()}},
     )
     if actor is not None:
         await audit.record(

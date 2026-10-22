@@ -228,6 +228,14 @@ async def _load_pending_invite(token: str) -> dict[str, Any]:
             "This invitation has expired. Ask your administrator to send a new one.",
             code="INVITE_EXPIRED",
         )
+    # The second lock: an invitation that slipped past revocation still cannot
+    # bring back an account an administrator removed.
+    user = await _users().find_one({"_id": ObjectId(invite["user_id"])}, {"is_deleted": 1})
+    if user is None or user.get("is_deleted"):
+        raise ConflictError(
+            "This invitation was withdrawn. Ask your administrator if you think that is wrong.",
+            code="INVITE_WITHDRAWN",
+        )
     return invite
 
 

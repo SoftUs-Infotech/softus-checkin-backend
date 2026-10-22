@@ -23,6 +23,10 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-val
 # tests, so two runs sharing a name would tear each other's fixtures down —
 # which is exactly what happens when several people run pytest at once.
 os.environ["MONGO_DB"] = f"softus_checkin_test_{os.getpid()}"
+# Never the server in .env: that is somebody's real (possibly live Atlas)
+# database, and this suite drops collections between tests. A test database
+# elsewhere has to be asked for by name.
+os.environ["MONGO_URI"] = os.environ.get("TEST_MONGO_URI", "mongodb://localhost:27017")
 os.environ.setdefault("ORG_TIMEZONE", "Asia/Kolkata")
 # Forced, not defaulted: a shell with EMAIL_PROVIDER=smtp exported must never
 # turn a test run into real mail from the organisation's domain.

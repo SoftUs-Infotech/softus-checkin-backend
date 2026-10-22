@@ -81,3 +81,13 @@ def test_opaque_tokens_are_compared_by_digest():
     assert stored != token
     assert tokens_match(token, stored)
     assert not tokens_match(generate_token(), stored)
+
+
+def test_a_database_password_never_reaches_the_logs():
+    from app.db.mongo import redact_uri
+
+    assert (
+        redact_uri("mongodb+srv://app_user:s3cr3t-P%40ss@cluster0.abc.mongodb.net/?w=majority")
+        == "mongodb+srv://app_user:****@cluster0.abc.mongodb.net/?w=majority"
+    )
+    assert redact_uri("mongodb://localhost:27017") == "mongodb://localhost:27017"

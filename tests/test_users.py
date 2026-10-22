@@ -149,3 +149,76 @@ async def test_a_removed_employee_disappears_from_listings(admin_client, api_pre
     listed = await admin_client.get(f"{api_prefix}/users", params={"search": "bye"})
     assert listed.json()["data"]["pagination"]["total"] == 0
     assert (await admin_client.get(f"{api_prefix}/users/{user_id}")).status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# removing an administrator
+# --------------------------------------------------------------------------- #
+async def test_an_administrator_can_remove_another_administrator(admin_client, api_prefix):
+    session = await invite_and_accept(
+        admin_client, api_prefix, email="second@example.com", role="ADMIN"
+    )
+    removed_id = session["user"]["id"]
+
+    response = await admin_client.delete(f"{api_prefix}/users/{removed_id}")
+
+    assert response.status_code == 200
+    # Their session stops working at once, not when the access token expires.
+    async with await _fresh_client() as client:
+        client.headers["Authorization"] = f"Bearer {session['tokens']['access_token']}"
+        me = await client.get(f"{api_prefix}/auth/me")
+    assert me.status_code == 401
+    async with await _fresh_client() as anonymous:
+        login = await anonymous.post(
+            f"{api_prefix}/auth/login",
+            json={"email": "second@example.com", "password": "Employee123"},
+        )
+    assert login.status_code in (401, 403)
+
+
+async def test_removing_somebody_who_never_accepted_withdraws_their_invitation(
+    admin_client, api_prefix, db
+):
+    invited = await admin_client.post(
+        f"{api_prefix}/auth/invite",
+        json={"email": "pending-admin@example.com", "first_name": "Pat", "role": "ADMIN"},
+    )
+    token = invited.json()["data"]["invite_url"].split("token=")[1]
+    user = await db["users"].find_one({"email": "pending-admin@example.com"})
+
+    assert (await admin_client.delete(f"{api_prefix}/users/{user['_id']}")).status_code == 200
+
+    invite = await db["invites"].find_one({"email": "pending-admin@example.com"})
+    assert invite["status"] == "REVOKED"
+    async with await _fresh_client() as anonymous:
+        preview = await anonymous.get(f"{api_prefix}/auth/invite/{token}")
+        accepted = await anonymous.post(
+            f"{api_prefix}/auth/accept-invite",
+            json={"token": token, "password": "Employee123", "first_name": "Pat"},
+        )
+    # The link used to reactivate the removed account and sign them in.
+    assert preview.status_code == 409
+    assert accepted.status_code == 409
+    still_removed = await db["users"].find_one({"_id": user["_id"]})
+    assert still_removed["is_deleted"] is True
+
+
+async def test_an_invitation_for_a_removed_account_is_refused_even_if_still_pending(
+    admin_client, api_prefix, db
+):
+    # Belt and braces: an invitation that somehow escaped revocation.
+    invited = await admin_client.post(
+        f"{api_prefix}/auth/invite",
+        json={"email": "slipped@example.com", "first_name": "Sam"},
+    )
+    token = invited.json()["data"]["invite_url"].split("token=")[1]
+    await db["users"].update_one({"email": "slipped@example.com"}, {"$set": {"is_deleted": True}})
+
+    async with await _fresh_client() as anonymous:
+        accepted = await anonymous.post(
+            f"{api_prefix}/auth/accept-invite",
+            json={"token": token, "password": "Employee123", "first_name": "Sam"},
+        )
+
+    assert accepted.status_code == 409
+    assert accepted.json()["error"]["code"] == "INVITE_WITHDRAWN"

@@ -4,6 +4,8 @@ The client is created once on startup and closed on shutdown. Nothing else in th
 application constructs a client; services ask for collections by name.
 """
 
+import re
+
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection, AsyncIOMotorDatabase
 
 from app.core.config import settings
@@ -48,11 +50,20 @@ class _MongoState:
 _state = _MongoState()
 
 
+def redact_uri(uri: str) -> str:
+    """``mongodb+srv://user:secret@host`` → ``mongodb+srv://user:****@host``."""
+    return re.sub(r"(//[^:/@]+:)[^@]+@", r"\g<1>****@", uri)
+
+
 async def connect_to_mongo() -> None:
     if _state.client is not None:
         return
 
-    logger.info("Connecting to MongoDB at %s (db=%s)", settings.MONGO_URI, settings.MONGO_DB)
+    # Never the URI itself: an Atlas URI carries the database password, and
+    # this line lands in every log file and log shipper the API writes to.
+    logger.info(
+        "Connecting to MongoDB at %s (db=%s)", redact_uri(settings.MONGO_URI), settings.MONGO_DB
+    )
     client: AsyncIOMotorClient = AsyncIOMotorClient(
         settings.MONGO_URI,
         serverSelectionTimeoutMS=5000,
