@@ -162,6 +162,16 @@ docker compose -f docker-compose.prod.yml up -d
   sees for you, which is the one that counts.
 - **Shifts, holidays, leave types, Saturday pattern:** check them before
   inviting anyone. Invite links point at `FRONTEND_URL`.
+- **Settings → Attendance start → Reset attendance**, on launch day. Without
+  it, every earlier day of the month reads as absent and the launch day as a
+  short day for everybody. After the reset:
+  - days before it are *Not tracked*;
+  - the launch day is a grace day: anybody who punched is present, with no
+    late or short-day mark;
+  - normal rules apply from the next morning.
+
+  That month's salary pays the days up to the launch in full. Nothing is
+  deleted, so a wrong date is fixed by resetting again with the right one.
 
 ---
 

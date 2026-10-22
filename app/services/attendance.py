@@ -161,6 +161,7 @@ async def recompute_day(
         # working day however the shift's weekday pattern reads.
         working_day=await work_calendar_service.is_working_day(day, user=user),
         employed_from=employment_start(user),
+        tracking_from=await settings_service.tracking_start(),
     )
 
     update = {
@@ -614,6 +615,7 @@ async def month_calendar(user: dict[str, Any], year: int, month: int) -> MonthCa
     days: list[AttendanceDayOut] = []
     summary = MonthSummary()
     employed_from = employment_start(user)
+    tracking_from = await settings_service.tracking_start()
 
     for day in iter_dates(first, last):
         day_key = date_key(day)
@@ -630,6 +632,7 @@ async def month_calendar(user: dict[str, Any], year: int, month: int) -> MonthCa
             leave=leaves.get(day_key),
             working_day=rulings.get(day_key),
             employed_from=employed_from,
+            tracking_from=tracking_from,
         )
 
         record = serialize(document) if document else {"date": day_key, "sessions": []}
@@ -674,6 +677,7 @@ async def month_calendar(user: dict[str, Any], year: int, month: int) -> MonthCa
             AttendanceStatus.WEEKEND,
             AttendanceStatus.UPCOMING,
             AttendanceStatus.BEFORE_JOINING,
+            AttendanceStatus.NOT_TRACKED,
         ):
             summary.working_days += 1
             summary.expected_minutes += computed.expected_minutes
@@ -741,6 +745,7 @@ NON_WORKING_STATUSES = {
     AttendanceStatus.ON_LEAVE,
     AttendanceStatus.UPCOMING,
     AttendanceStatus.BEFORE_JOINING,
+    AttendanceStatus.NOT_TRACKED,
 }
 
 
@@ -887,6 +892,7 @@ async def register(query: RegisterQuery) -> tuple[list[AttendanceDayOut], Regist
     start, end = _register_range(query)
     span_days = (end - start).days + 1
     employees = await _register_employees(query.search, query.department)
+    tracking_from = await settings_service.tracking_start()
 
     today = org_today()
     now = utc_now()
@@ -935,6 +941,7 @@ async def register(query: RegisterQuery) -> tuple[list[AttendanceDayOut], Regist
                 leave=leaves.get(day_key),
                 working_day=rulings.get(day_key),
                 employed_from=employment_start(user),
+                tracking_from=tracking_from,
             )
 
             record = serialize(document) if document else {"date": day_key, "sessions": []}

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request
 from app.models.audit_log import AuditAction, AuditEntity
 from app.schemas.audit import AuditLogOut
 from app.schemas.common import PaginatedData
-from app.schemas.settings import OrgSettingsOut, OrgSettingsUpdate
+from app.schemas.settings import OrgSettingsOut, OrgSettingsUpdate, TrackingStartUpdate
 from app.services import audit as audit_service
 from app.services import settings as settings_service
 from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser, Pagination
@@ -39,6 +39,17 @@ async def update_settings(
 ) -> dict:
     updated = await settings_service.update_settings(payload, actor)
     return success(OrgSettingsOut.from_document(updated), message="Settings updated.")
+
+
+@router.post("/settings/tracking-start", summary="Start counting attendance from a day")
+async def set_tracking_start(
+    payload: TrackingStartUpdate, _: CurrentAdmin, actor: CurrentActor
+) -> dict:
+    updated = await settings_service.set_tracking_start(payload.starts_on, actor)
+    return success(
+        OrgSettingsOut.from_document(updated),
+        message="Attendance now counts from " + updated["tracking_starts_on"] + ".",
+    )
 
 
 @router.get("/audit-logs", summary="Audit trail")

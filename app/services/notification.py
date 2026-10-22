@@ -183,6 +183,7 @@ async def weekly_digest() -> int:
     from app.core.datetime import date_key, org_today
     from app.services import correction as correction_service
     from app.services import leave as leave_service
+    from app.services import settings as settings_service
     from app.services import task as task_service
 
     corrections = await correction_service.pending_count()
@@ -190,6 +191,10 @@ async def weekly_digest() -> int:
     tasks = await task_service.pending_count()
 
     last_week_start = org_today() - timedelta(days=7)
+    # Nothing before the go-live reset is anybody's absence.
+    tracking_from = await settings_service.tracking_start()
+    if tracking_from is not None and tracking_from > last_week_start:
+        last_week_start = tracking_from
     exceptions = await get_collection(Collections.ATTENDANCE).count_documents(
         {
             "date": {"$gte": date_key(last_week_start), "$lt": date_key(org_today())},

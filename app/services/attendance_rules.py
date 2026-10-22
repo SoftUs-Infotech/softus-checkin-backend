@@ -6,6 +6,11 @@ below is directly unit-testable without a running server.
 
 Precedence, highest first:
 
+-1. Before the organisation's tracking start (the go-live "reset") a day is
+   ``NOT_TRACKED`` whatever was punched on it — test punches from before launch
+   must not count. The start day itself is a grace day: anybody who punched is
+   present, with no late, short-hours or half-day verdict, and nobody who did
+   not is absent. Ordinary rules apply from the next day.
 0. A day before the employee joined, with nothing punched on it, is
    ``BEFORE_JOINING``. Without this a mid-month joiner read as absent for every
    earlier working day, and the salary projection docked them for each one.
@@ -196,6 +201,7 @@ def compute_day_status(
     leave: dict[str, Any] | None = None,
     working_day: bool | None = None,
     employed_from: date | None = None,
+    tracking_from: date | None = None,
 ) -> DayComputation:
     """Decide what a single day means. See the module docstring for precedence.
 
@@ -220,7 +226,10 @@ def compute_day_status(
 
     leave_day_part = (leave or {}).get("day_part", FULL_DAY) if leave else None
     expected = expected_minutes_for(shift, leave_day_part)
-    late = is_late_arrival(first_in, shift)
+    grace_day = tracking_from is not None and day == tracking_from
+    # Nobody is late on the day the system went live: the shift had started
+    # long before anybody could punch.
+    late = False if grace_day else is_late_arrival(first_in, shift)
 
     def result(status: AttendanceStatus) -> DayComputation:
         return DayComputation(
@@ -229,6 +238,19 @@ def compute_day_status(
             expected_minutes=expected,
             is_late=late,
             has_open_session=has_open,
+            first_punch_in=first_in,
+            last_punch_out=last_out,
+        )
+
+    # -1. Before go-live nothing counts, not even punches made while testing —
+    #     their hours included, or the month's total would carry them.
+    if tracking_from is not None and day < tracking_from:
+        return DayComputation(
+            status=AttendanceStatus.NOT_TRACKED,
+            worked_minutes=0,
+            expected_minutes=0,
+            is_late=False,
+            has_open_session=False,
             first_punch_in=first_in,
             last_punch_out=last_out,
         )
@@ -262,6 +284,16 @@ def compute_day_status(
     # 4. Nothing else is expected of a day that has not happened.
     if day > today:
         return result(AttendanceStatus.UPCOMING)
+
+    # The go-live day is judged generously: there is no fair shift to measure.
+    if grace_day:
+        if has_open and day == today:
+            return result(AttendanceStatus.IN_PROGRESS)
+        if session_count:
+            return result(AttendanceStatus.PRESENT)
+        if day == today:
+            return result(AttendanceStatus.NOT_STARTED)
+        return result(AttendanceStatus.NOT_TRACKED)
 
     # 5. An unfinished session: still working today, forgotten if it is not.
     if has_open:

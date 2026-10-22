@@ -88,3 +88,9 @@ class OrgSettings(MongoModel):
     comp_off_expiry_days: int = Field(default=90, ge=0, le=730)
 
     support_email: str | None = None
+
+    # The day attendance starts to count — the day the system went live, set by
+    # the administrator's "reset". Days before it are not tracked: nobody is
+    # absent, late or docked for a day the app was not running. The day itself
+    # is a grace day; ordinary rules apply from the next one. ISO date or None.
+    tracking_starts_on: str | None = None

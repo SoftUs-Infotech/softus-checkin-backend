@@ -55,6 +55,14 @@ async def require_correction(correction_id: str) -> dict[str, Any]:
 
 
 async def _check_window(day: date) -> None:
+    # A day before go-live is not tracked, so there is nothing to correct.
+    tracking_from = await settings_service.tracking_start()
+    if tracking_from is not None and day < tracking_from:
+        raise ValidationError(
+            f"Attendance is tracked from {tracking_from.strftime('%d %b %Y')}. "
+            "Days before that are not counted, so they need no correction.",
+            code="BEFORE_TRACKING_START",
+        )
     org_settings = await settings_service.get_settings()
     window = int(org_settings.get("correction_window_days", 7))
     if window <= 0:

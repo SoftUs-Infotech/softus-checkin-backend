@@ -1,5 +1,7 @@
 """Organisation settings API shapes."""
 
+from datetime import date
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.settings import SalaryDayBasis
@@ -77,6 +79,7 @@ class OrgSettingsOut(BaseModel):
     comp_off_expiry_days: int = 90
 
     support_email: str | None = None
+    tracking_starts_on: str | None = None
 
     # Environment-driven, shown for reference and not editable through the API.
     timezone: str
@@ -89,3 +92,10 @@ class OrgSettingsOut(BaseModel):
         data = dict(document)
         data["timezone"] = settings.ORG_TIMEZONE
         return cls.model_validate(data)
+
+
+class TrackingStartUpdate(BaseModel):
+    """The administrator's "reset": attendance counts from this day on."""
+
+    #: Omitted means today in the organisation's timezone.
+    starts_on: date | None = None

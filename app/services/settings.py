@@ -8,9 +8,11 @@ to one request to appear everywhere. That is acceptable for policy values that
 change a few times a year.
 """
 
+from datetime import date
 from typing import Any
 
-from app.core.datetime import utc_now
+from app.core.datetime import date_key, org_today, utc_now
+from app.core.exceptions import ValidationError
 from app.db.mongo import Collections, get_collection
 from app.models.audit_log import AuditAction, AuditEntity
 from app.models.base import serialize
@@ -44,6 +46,46 @@ async def get_settings(*, refresh: bool = False) -> dict[str, Any]:
 
     _cache = serialize(document)
     return _cache
+
+
+async def set_tracking_start(starts_on: date | None, actor: Actor) -> dict[str, Any]:
+    """Start counting attendance from ``starts_on`` (today when omitted).
+
+    Nothing is deleted: punches recorded before the day stay in the database and
+    simply stop counting, so a wrong date is undone by setting the right one.
+    A future date is refused — today would stop counting for everybody.
+    """
+    today = org_today()
+    day = starts_on or today
+    if day > today:
+        raise ValidationError(
+            "Tracking cannot start in the future. Reset on the day you go live.",
+            code="TRACKING_START_IN_FUTURE",
+        )
+
+    existing = await get_settings(refresh=True)
+    await _settings().update_one(
+        {"key": SETTINGS_KEY},
+        {"$set": {"tracking_starts_on": date_key(day), "updated_at": utc_now()}},
+    )
+    clear_cache()
+    updated = await get_settings(refresh=True)
+    await audit.record(
+        actor,
+        AuditAction.UPDATE,
+        AuditEntity.SETTINGS,
+        entity_id=SETTINGS_KEY,
+        entity_label="Attendance tracking start",
+        before={"tracking_starts_on": existing.get("tracking_starts_on")},
+        after={"tracking_starts_on": date_key(day)},
+    )
+    return updated
+
+
+async def tracking_start() -> date | None:
+    """The first day attendance counts, or None when it always has."""
+    value = (await get_settings()).get("tracking_starts_on")
+    return date.fromisoformat(value) if value else None
 
 
 async def update_settings(payload: OrgSettingsUpdate, actor: Actor) -> dict[str, Any]:

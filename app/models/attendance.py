@@ -32,6 +32,9 @@ class AttendanceStatus(StrEnum):
     #: A day before the employee's first — nothing was expected of them, and
     #: nothing is owed for it except the pay they had not yet started earning.
     BEFORE_JOINING = "BEFORE_JOINING"
+    #: A day before the organisation started tracking attendance — before the
+    #: administrator's "reset" on go-live. People worked; the app was not there.
+    NOT_TRACKED = "NOT_TRACKED"
 
 
 #: What each status looks like on the calendar. The frontend reads this rather
@@ -49,6 +52,7 @@ STATUS_COLORS: dict[str, str] = {
     AttendanceStatus.WEEKEND: "grey",
     AttendanceStatus.UPCOMING: "grey",
     AttendanceStatus.BEFORE_JOINING: "grey",
+    AttendanceStatus.NOT_TRACKED: "grey",
 }
 
 STATUS_LABELS: dict[str, str] = {
@@ -64,6 +68,7 @@ STATUS_LABELS: dict[str, str] = {
     AttendanceStatus.WEEKEND: "Weekly off",
     AttendanceStatus.UPCOMING: "Upcoming",
     AttendanceStatus.BEFORE_JOINING: "Before joining",
+    AttendanceStatus.NOT_TRACKED: "Not tracked",
 }
 
 #: Statuses that mean the employee is not expected to punch.
@@ -73,6 +78,7 @@ NON_WORKING_STATUSES = {
     AttendanceStatus.ON_LEAVE,
     AttendanceStatus.UPCOMING,
     AttendanceStatus.BEFORE_JOINING,
+    AttendanceStatus.NOT_TRACKED,
 }
 
 

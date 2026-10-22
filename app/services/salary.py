@@ -76,6 +76,9 @@ class DayCounts:
     #: Both are kept because which one prorates the pay depends on the basis.
     before_joining_days: float = 0.0
     before_joining_calendar_days: int = 0
+    #: Working days up to and including the go-live reset. Paid in full: people
+    #: worked them, the system simply was not recording yet.
+    untracked_days: float = 0.0
 
     def as_dict(self) -> dict[str, float]:
         return {
@@ -91,6 +94,7 @@ class DayCounts:
             "late_days": self.late_days,
             "before_joining_days": round(self.before_joining_days, 2),
             "before_joining_calendar_days": self.before_joining_calendar_days,
+            "untracked_days": round(self.untracked_days, 2),
         }
 
 
@@ -510,6 +514,7 @@ def _count_month(
     leave: dict[str, dict[str, Any]],
     holidays: dict[str, Any],
     employed_from: date | None = None,
+    tracking_from: date | None = None,
 ) -> DayCounts:
     """Turn a month of working days into the day buckets the deductions read.
 
@@ -552,6 +557,12 @@ def _count_month(
         # to work" the days before their start, they will never work them.
         if not_yet_joined:
             counts.before_joining_days += 1
+            continue
+
+        # Up to and including go-live the day is paid as worked: nothing was
+        # recorded that could fairly cost anybody anything.
+        if tracking_from is not None and decision.day <= tracking_from:
+            counts.untracked_days += 1
             continue
 
         if decision.day >= today:
@@ -598,6 +609,7 @@ async def project_month(
     # two places defaulting the pattern is two places to get it wrong, and a
     # projection that disagrees with the calendar is worse than either.
     working_saturdays, fifth = await calendar_service.saturday_pattern()
+    tracking_from = await settings_service.tracking_start()
 
     attendance = await _attendance_map(user_ids, first, last)
     leave = await _leave_day_map(user_ids, first, last)
@@ -628,6 +640,7 @@ async def project_month(
             leave=leave.get(user_id, {}),
             holidays=holidays,
             employed_from=employment_start(user),
+            tracking_from=tracking_from,
         )
 
         history = await list_salaries(user_id)
