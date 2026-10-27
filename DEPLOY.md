@@ -162,16 +162,24 @@ docker compose -f docker-compose.prod.yml up -d
   sees for you, which is the one that counts.
 - **Shifts, holidays, leave types, Saturday pattern:** check them before
   inviting anyone. Invite links point at `FRONTEND_URL`.
-- **Settings → Attendance start → Reset attendance**, on launch day. Without
-  it, every earlier day of the month reads as absent and the launch day as a
-  short day for everybody. After the reset:
+- **Leave types:** check each type's accrual (every month, quarter or year) and
+  untick *Employees can see and apply for it* on any type employees shouldn't
+  see.
+- **Settings → Attendance and leave start → Reset attendance and leave**, on
+  launch day. Without it, every earlier day of the month reads as absent, the
+  launch day as a short day for everybody, and leave balances as if everybody
+  had been earning since joining. After the reset:
   - days before it are *Not tracked*;
   - the launch day is a grace day: anybody who punched is present, with no
     late or short-day mark;
-  - normal rules apply from the next morning.
+  - normal rules apply from the next morning;
+  - every leave balance is zero on the launch day and accrues from there
+    (a monthly type credits the part of the launch month that is left).
 
   That month's salary pays the days up to the launch in full. Nothing is
   deleted, so a wrong date is fixed by resetting again with the right one.
+  If people bring leave over from an earlier system, set it per employee after
+  the reset.
 
 ---
 

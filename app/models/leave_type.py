@@ -111,6 +111,11 @@ class LeaveType(MongoModel):
     # Empty means every department.
     applicable_departments: list[str] = Field(default_factory=list)
 
+    # A hidden type is the administrators' to record: employees neither see it
+    # nor apply for it. It still accrues, so showing it again later shows a
+    # balance that is already right.
+    visible_to_employees: bool = True
+
     color: str = "#2563eb"
     sort_order: int = 0
     is_active: bool = True

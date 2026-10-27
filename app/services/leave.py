@@ -11,6 +11,9 @@ Two things this module is careful about:
 * **Crediting once.** Accrual is driven by a stored policy and recorded in a
   ledger on the balance, so the scheduled job can run twice — or be triggered by
   hand mid-cycle — without anybody earning the same days again.
+* **Starting from go-live.** Once an administrator resets attendance, nothing
+  before that day is earned, carried over or charged: every balance starts at
+  zero on the go-live day and accrues from there.
 """
 
 from contextlib import suppress
@@ -121,32 +124,84 @@ def cycles_in_year(policy: AccrualPolicy, year: int) -> list[AccrualCycle]:
     ]
 
 
-def _earning_from(user: dict[str, Any], leave_type: dict[str, Any]) -> date | None:
-    """The first day this employee earns this type: joining plus the waiting period.
+def _earning_from(
+    user: dict[str, Any], leave_type: dict[str, Any], tracking_from: date | None = None
+) -> date | None:
+    """The first day this employee earns this type.
 
-    A record with no joining date gives nothing to wait from or prorate against,
+    Joining plus the waiting period, but never before go-live: days before the
+    system was in use earn nothing, so balances start at zero on that day. A
+    record with no joining date gives nothing to wait from or prorate against,
     so the employee is treated as having been here all along — better than
     silently crediting nobody.
     """
+    earning: date | None = None
     joining = user.get("joining_date")
-    if not joining:
-        return None
-    joined = date.fromisoformat(joining) if isinstance(joining, str) else joining
-    return joined + timedelta(days=int(leave_type.get("applicable_after_days", 0)))
+    if joining:
+        joined = date.fromisoformat(joining) if isinstance(joining, str) else joining
+        earning = joined + timedelta(days=int(leave_type.get("applicable_after_days", 0)))
+    if tracking_from and (earning is None or earning < tracking_from):
+        return tracking_from
+    return earning
+
+
+def _counts(request: dict[str, Any], tracking_from: date | None) -> bool:
+    """Whether a request is charged to a balance.
+
+    A request that starts before go-live belongs to the time before the system
+    counted anything; balances were rebuilt without it, so deciding or
+    withdrawing it later must not touch them either.
+    """
+    return tracking_from is None or request["from_date"] >= date_key(tracking_from)
+
+
+def cycle_span(key: str) -> tuple[date, date] | None:
+    """The days a ledger entry paid for, read back from its cycle key."""
+    year_part, _, part = key.partition("-")
+    try:
+        year = int(year_part)
+        if part == "Y":
+            return date(year, 1, 1), date(year, 12, 31)
+        if part.startswith("Q"):
+            quarter = int(part[1:])
+            first, _ = month_range(year, quarter * 3 - 2)
+            _, last = month_range(year, quarter * 3)
+            return first, last
+        if part.startswith("M"):
+            return month_range(year, int(part[1:]))
+    except ValueError:
+        pass
+    return None
 
 
 def cycle_credit(
-    policy: AccrualPolicy, cycle: AccrualCycle, *, earning_from: date | None
+    policy: AccrualPolicy,
+    cycle: AccrualCycle,
+    *,
+    earning_from: date | None,
+    covered: list[tuple[date, date]] | None = None,
 ) -> float:
-    """A cycle's credit, prorated for someone who was not there for all of it."""
+    """A cycle's credit, prorated for the part of it nobody has paid for yet.
+
+    Two things shrink it: joining (or go-live) partway through, and days an
+    earlier credit already paid for. The second is what lets an administrator
+    change a type from yearly to monthly mid-year: the year was credited in
+    January, so the monthly cycles that follow add nothing until next year,
+    rather than paying the same months twice.
+    """
     amount = float(policy.amount_per_cycle)
-    if earning_from is None or earning_from <= cycle.start:
-        return round(amount, 2)
-    if earning_from > cycle.end:
+    start = max(cycle.start, earning_from) if earning_from else cycle.start
+    if start > cycle.end:
         return 0.0
-    served = (cycle.end - earning_from).days + 1
     whole = (cycle.end - cycle.start).days + 1
-    return round(amount * served / whole, 2)
+    unpaid = (cycle.end - start).days + 1
+    for first, last in covered or []:
+        overlap = (min(last, cycle.end) - max(first, start)).days + 1
+        if overlap > 0:
+            unpaid -= overlap
+    if unpaid <= 0:
+        return 0.0
+    return round(amount * unpaid / whole, 2)
 
 
 async def _carried_forward(
@@ -157,6 +212,10 @@ async def _carried_forward(
     The cap wins wherever there is one; without a cap only a type that does not
     lapse keeps its leftover whole.
     """
+    tracking_from = await settings_service.tracking_start()
+    if tracking_from and year <= tracking_from.year:
+        return 0.0  # last year was entirely before go-live
+
     previous = await _balances().find_one(
         {"user_id": user_id, "leave_type_id": leave_type["id"], "year": year - 1}
     )
@@ -214,15 +273,27 @@ async def apply_due_credits(
     """
     as_of = as_of or org_today()
     policy = resolve_accrual_policy(leave_type)
-    earning_from = _earning_from(user, leave_type)
+    earning_from = _earning_from(
+        user, leave_type, await settings_service.tracking_start()
+    )
     query = {"user_id": user["id"], "leave_type_id": leave_type["id"], "year": year}
+
+    balance = await _balances().find_one(query, {"accrual_credits.cycle_key": 1}) or {}
+    paid_keys = {credit["cycle_key"] for credit in balance.get("accrual_credits", [])}
 
     credited = 0.0
     for cycle in cycles_in_year(policy, year):
         if cycle.credit_on > as_of:
             break
 
-        days = cycle_credit(policy, cycle, earning_from=earning_from)
+        # Spans paid under a different frequency. Same-frequency cycles never
+        # overlap, and this cycle's own key is guarded by the update below.
+        covered = [
+            span
+            for key in paid_keys
+            if key != cycle.key and (span := cycle_span(key)) is not None
+        ]
+        days = cycle_credit(policy, cycle, earning_from=earning_from, covered=covered)
         result = await _balances().update_one(
             {**query, "accrual_credits.cycle_key": {"$ne": cycle.key}},
             {
@@ -295,16 +366,85 @@ async def run_accruals(*, as_of: date | None = None) -> int:
         for leave_type in leave_types:
             await _ensure_balance(user["id"], leave_type, as_of.year)
             if await apply_due_credits(
-                user, leave_type, as_of.year, as_of=as_of, notify=True
+                user,
+                leave_type,
+                as_of.year,
+                as_of=as_of,
+                # A hidden type still accrues, silently.
+                notify=leave_type_service.visible_to(user, leave_type),
             ):
                 credited += 1
 
     return credited
 
 
-async def list_balances(user_id: str, year: int | None = None) -> list[dict[str, Any]]:
+async def restart_balances(starts_on: date) -> int:
+    """Rebuild every balance from go-live: zero on the day, accruing after it.
+
+    Called when an administrator resets attendance. Days earned before, carried
+    over into the go-live year or set by hand are dropped, and leave is charged
+    again only for requests that start on or after the day. Earlier years are
+    history and stay as they were. Accrual itself is not run here: the next read
+    or scheduled run credits from go-live, prorated like a mid-cycle joining.
+    Returns how many balances were rebuilt.
+    """
+    start_key = date_key(starts_on)
+    leave_types = {
+        leave_type["id"]: leave_type
+        for leave_type in await leave_type_service.list_leave_types(include_inactive=True)
+    }
+    documents = (
+        await _balances()
+        .find({"year": {"$gte": starts_on.year}})
+        .sort("year", 1)  # a later year carries over from the rebuilt one before it
+        .to_list(length=None)
+    )
+
+    for document in documents:
+        year = int(document["year"])
+        charged = {ApprovalStatus.APPROVED.value: 0.0, ApprovalStatus.PENDING.value: 0.0}
+        requests = _requests().find(
+            {
+                "user_id": document["user_id"],
+                "leave_type_id": document["leave_type_id"],
+                "is_deleted": False,
+                "status": {"$in": list(charged)},
+                "from_date": {"$gte": max(start_key, f"{year}-01-01"), "$lte": f"{year}-12-31"},
+            }
+        )
+        async for request in requests:
+            charged[request["status"]] += float(request.get("total_days", 0))
+
+        leave_type = leave_types.get(str(document["leave_type_id"]))
+        carried = (
+            await _carried_forward(str(document["user_id"]), leave_type, year)
+            if leave_type
+            else 0.0
+        )
+        await _balances().update_one(
+            {"_id": document["_id"]},
+            {
+                "$set": {
+                    "allocated": 0,
+                    "accrual_credits": [],
+                    "carried_forward": carried,
+                    "used": round(charged[ApprovalStatus.APPROVED.value], 2),
+                    "pending": round(charged[ApprovalStatus.PENDING.value], 2),
+                    "updated_at": utc_now(),
+                }
+            },
+        )
+
+    logger.info("Leave balances restarted from %s: %d rebuilt.", start_key, len(documents))
+    return len(documents)
+
+
+async def list_balances(
+    user_id: str, year: int | None = None, *, for_user: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Balances for every leave type, or only those ``for_user`` may see."""
     year = year or org_today().year
-    leave_types = await leave_type_service.list_leave_types()
+    leave_types = await leave_type_service.list_leave_types(for_user=for_user)
 
     results = []
     for leave_type in leave_types:
@@ -322,6 +462,7 @@ async def list_balances(user_id: str, year: int | None = None) -> list[dict[str,
                 "is_paid": leave_type.get("is_paid", True),
                 "allow_half_day": leave_type.get("allow_half_day", True),
                 "allow_negative_balance": leave_type.get("allow_negative_balance", False),
+                "visible_to_employees": leave_type.get("visible_to_employees", True),
                 "year": year,
                 "allocated": allocated,
                 "carried_forward": carried,
@@ -468,9 +609,21 @@ async def apply_for_leave(
     user: dict[str, Any], payload: LeaveApply, actor: Actor
 ) -> dict[str, Any]:
     leave_type = await leave_type_service.require_leave_type(payload.leave_type_id)
+    if not leave_type_service.visible_to(user, leave_type):
+        # Indistinguishable from a type that does not exist: a hidden type is
+        # not something an employee should learn about from an error message.
+        raise NotFoundError("Leave type not found.", code="LEAVE_TYPE_NOT_FOUND")
     if not leave_type.get("is_active", True):
         raise ValidationError(
             f"{leave_type['name']} is no longer available.", code="LEAVE_TYPE_INACTIVE"
+        )
+
+    tracking_from = await settings_service.tracking_start()
+    if tracking_from and payload.from_date < tracking_from:
+        raise ValidationError(
+            f"Leave can only be requested from {date_key(tracking_from)}, "
+            "the day attendance started being tracked.",
+            code="BEFORE_TRACKING_START",
         )
 
     days, total = await resolve_leave_days(user, payload)
@@ -775,7 +928,9 @@ async def decide(
     total = float(request["total_days"])
     now = utc_now()
 
-    if approve:
+    if not _counts(request, await settings_service.tracking_start()):
+        pass  # from before go-live: never reserved, so nothing to move
+    elif approve:
         # Move the reservation into used.
         await _move_balance(
             request["user_id"], request["leave_type_id"], year, pending=-total, used=total
@@ -873,7 +1028,9 @@ async def cancel(request_id: str, user: dict[str, Any], actor: Actor) -> dict[st
 
     year = int(request["from_date"][:4])
     total = float(request["total_days"])
-    if request["status"] == ApprovalStatus.PENDING.value:
+    if not _counts(request, await settings_service.tracking_start()):
+        pass  # from before go-live: never charged, so nothing to give back
+    elif request["status"] == ApprovalStatus.PENDING.value:
         await _move_balance(
             request["user_id"], request["leave_type_id"], year, pending=-total
         )

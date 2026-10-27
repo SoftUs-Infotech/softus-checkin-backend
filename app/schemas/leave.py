@@ -75,6 +75,7 @@ class LeaveBalanceOut(BaseModel):
     is_paid: bool = True
     allow_half_day: bool = True
     allow_negative_balance: bool = False
+    visible_to_employees: bool = True
     year: int
     allocated: float
     carried_forward: float

@@ -17,6 +17,7 @@ from app.db.mongo import Collections, get_collection
 from app.models.audit_log import AuditAction, AuditEntity
 from app.models.base import serialize
 from app.models.leave_type import LeaveType, annual_quota_for, resolve_accrual_policy
+from app.models.user import UserRole
 from app.schemas.leave_type import LeaveTypeCreate, LeaveTypeUpdate
 from app.services import audit
 from app.services.audit import Actor
@@ -41,10 +42,23 @@ async def require_leave_type(leave_type_id: str) -> dict[str, Any]:
     return serialize(document)
 
 
-async def list_leave_types(*, include_inactive: bool = False) -> list[dict[str, Any]]:
+def visible_to(user: dict[str, Any], leave_type: dict[str, Any]) -> bool:
+    """Whether this person may see, and apply for, this leave type."""
+    return user.get("role") == UserRole.ADMIN.value or leave_type.get(
+        "visible_to_employees", True
+    )
+
+
+async def list_leave_types(
+    *, include_inactive: bool = False, for_user: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Every leave type, or only those ``for_user`` is allowed to see."""
     query: dict[str, Any] = {"is_deleted": False}
     if not include_inactive:
         query["is_active"] = True
+    if for_user is not None and for_user.get("role") != UserRole.ADMIN.value:
+        # Types saved before the switch existed have no field: they are visible.
+        query["visible_to_employees"] = {"$ne": False}
     cursor = _leave_types().find(query).sort([("sort_order", 1), ("name", 1)])
     return [serialize(document) for document in await cursor.to_list(length=100)]
 

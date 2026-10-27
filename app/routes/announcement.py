@@ -137,7 +137,9 @@ async def dashboard_summary(current_user: CurrentUser) -> dict:
         "upcoming_holidays": [
             HolidayOut.from_document(item) for item in await holiday_service.upcoming(5)
         ],
-        "leave_balances": await leave_service.list_balances(current_user["id"]),
+        "leave_balances": await leave_service.list_balances(
+            current_user["id"], for_user=current_user
+        ),
         "on_leave_today": await leave_service.on_leave_today(),
         "unread_notifications": await notification_service.unread_count(current_user["id"]),
     }

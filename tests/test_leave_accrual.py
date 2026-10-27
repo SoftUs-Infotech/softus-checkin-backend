@@ -345,3 +345,59 @@ async def test_cycle_keys_and_due_dates_cover_the_year():
     ]
     assert cycles[0].credit_on == date(2026, 3, 31)
     assert cycles[0].credit_on == cycles[1].start - timedelta(days=1)
+
+
+# --------------------------------------------------------------------------- #
+# changing how often a type credits, mid-year
+# --------------------------------------------------------------------------- #
+async def test_yearly_to_monthly_mid_year_does_not_pay_the_months_twice(
+    db, admin_client, api_prefix
+):
+    leave_type = await _leave_type(
+        admin_client, api_prefix,
+        accrual={"frequency": "YEARLY", "amount_per_cycle": 12},
+    )
+    user_id = await _employee(admin_client, api_prefix, "switch@example.com")
+    await leave_service.run_accruals(as_of=date(YEAR, 3, 1))
+
+    await admin_client.patch(
+        f"{api_prefix}/leave-types/{leave_type['id']}",
+        json={"accrual": {"frequency": "MONTHLY", "amount_per_cycle": 1}},
+    )
+    changed = await leave_type_service.require_leave_type(leave_type["id"])
+    await leave_service.run_accruals(as_of=date(YEAR, 10, 5))
+    await leave_service.apply_due_credits(
+        {"id": user_id}, changed, YEAR, as_of=date(YEAR, 10, 5)
+    )
+
+    # The January credit already paid for the whole year.
+    assert (await _balance(db, user_id, leave_type["id"]))["allocated"] == 12
+
+
+async def test_monthly_to_yearly_mid_year_pays_only_the_months_left(
+    db, admin_client, api_prefix
+):
+    leave_type = await _leave_type(
+        admin_client, api_prefix,
+        accrual={"frequency": "MONTHLY", "amount_per_cycle": 1},
+    )
+    user_id = await _employee(admin_client, api_prefix, "back@example.com")
+    await leave_service.run_accruals(as_of=date(YEAR, 10, 5))  # Jan–Oct: 10 days
+
+    await admin_client.patch(
+        f"{api_prefix}/leave-types/{leave_type['id']}",
+        json={"accrual": {"frequency": "YEARLY", "amount_per_cycle": 12}},
+    )
+    await leave_service.run_accruals(as_of=date(YEAR, 10, 6))
+
+    left = (date(YEAR, 12, 31) - date(YEAR, 11, 1)).days + 1
+    whole = (date(YEAR, 12, 31) - date(YEAR, 1, 1)).days + 1
+    allocated = (await _balance(db, user_id, leave_type["id"]))["allocated"]
+    assert allocated == round(10 + round(12 * left / whole, 2), 2)
+
+
+def test_a_ledger_key_reads_back_as_the_days_it_paid_for():
+    assert leave_service.cycle_span("2026-Y") == (date(2026, 1, 1), date(2026, 12, 31))
+    assert leave_service.cycle_span("2026-Q2") == (date(2026, 4, 1), date(2026, 6, 30))
+    assert leave_service.cycle_span("2026-M02") == (date(2026, 2, 1), date(2026, 2, 28))
+    assert leave_service.cycle_span("nonsense") is None

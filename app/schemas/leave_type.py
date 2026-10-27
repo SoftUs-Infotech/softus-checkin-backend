@@ -57,6 +57,7 @@ class LeaveTypeBase(BaseModel):
     max_consecutive_days: int | None = Field(default=None, ge=1, le=365)
     applicable_after_days: int = Field(default=0, ge=0, le=730)
     applicable_departments: list[str] = Field(default_factory=list)
+    visible_to_employees: bool = True
     color: str = "#2563eb"
     sort_order: int = 0
     description: str | None = Field(default=None, max_length=500)
@@ -107,6 +108,7 @@ class LeaveTypeUpdate(BaseModel):
     max_consecutive_days: int | None = Field(default=None, ge=1, le=365)
     applicable_after_days: int | None = Field(default=None, ge=0, le=730)
     applicable_departments: list[str] | None = None
+    visible_to_employees: bool | None = None
     color: str | None = None
     sort_order: int | None = None
     description: str | None = Field(default=None, max_length=500)
@@ -139,6 +141,7 @@ class LeaveTypeOut(BaseModel):
     max_consecutive_days: int | None = None
     applicable_after_days: int
     applicable_departments: list[str] = Field(default_factory=list)
+    visible_to_employees: bool = True
     color: str
     sort_order: int
     description: str | None = None

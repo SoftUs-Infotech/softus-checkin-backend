@@ -7,6 +7,7 @@ from app.schemas.audit import AuditLogOut
 from app.schemas.common import PaginatedData
 from app.schemas.settings import OrgSettingsOut, OrgSettingsUpdate, TrackingStartUpdate
 from app.services import audit as audit_service
+from app.services import leave as leave_service
 from app.services import settings as settings_service
 from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser, Pagination
 from app.utils.network import client_ip, network_view
@@ -46,9 +47,12 @@ async def set_tracking_start(
     payload: TrackingStartUpdate, _: CurrentAdmin, actor: CurrentActor
 ) -> dict:
     updated = await settings_service.set_tracking_start(payload.starts_on, actor)
+    # Leave restarts with attendance: balances are zero on go-live day and
+    # accrue from there, so nothing earned or taken before it carries over.
+    await leave_service.restart_balances(await settings_service.tracking_start())
     return success(
         OrgSettingsOut.from_document(updated),
-        message="Attendance now counts from " + updated["tracking_starts_on"] + ".",
+        message="Attendance and leave now count from " + updated["tracking_starts_on"] + ".",
     )
 
 

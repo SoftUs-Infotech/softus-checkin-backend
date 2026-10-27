@@ -45,7 +45,9 @@ def _page(items, pagination, total):
 async def my_balances(
     current_user: CurrentUser, year: int | None = Query(default=None, ge=2000, le=2100)
 ) -> dict:
-    balances = await leave_service.list_balances(current_user["id"], year)
+    balances = await leave_service.list_balances(
+        current_user["id"], year, for_user=current_user
+    )
     return success([LeaveBalanceOut(**item) for item in balances])
 
 
