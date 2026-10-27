@@ -42,7 +42,8 @@ services:
         max-file: "5"
 
   caddy:
-    image: caddy:2.8-alpine
+    # 2.10 or later: certificates for an IP address need ACME profiles.
+    image: caddy:2.11.7-alpine
     restart: unless-stopped
     env_file: .env.production
     depends_on:
