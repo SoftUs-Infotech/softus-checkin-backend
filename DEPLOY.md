@@ -55,6 +55,11 @@ Create an **A record**, e.g. `api.yourcompany.com`, pointing at the Elastic IP.
 Wait until `nslookup api.yourcompany.com` returns it. Caddy cannot get a
 certificate before the name resolves.
 
+**No domain?** Skip this step and use the Elastic IP as `API_DOMAIN` in step 5.
+Caddy then gets a certificate for the IP address itself and the API is at
+`https://<Elastic IP>`. Let's Encrypt issues those only as 6-day certificates,
+so Caddy uses that kind for a domain too and renews it by itself.
+
 ## 4. Prepare the server
 
 ```bash
@@ -82,7 +87,7 @@ Fill in every value marked **REQUIRED**:
 
 | Setting | Value |
 |---|---|
-| `API_DOMAIN` | `api.yourcompany.com` |
+| `API_DOMAIN` | `api.yourcompany.com`, or the Elastic IP (step 3) |
 | `ACME_EMAIL` | an inbox that reads certificate notices |
 | `SECRET_KEY` | `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `MONGO_URI` | the Atlas string from step 1 |

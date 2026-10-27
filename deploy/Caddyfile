@@ -1,9 +1,21 @@
 {
 	# Let's Encrypt writes here about expiring certificates.
 	email {$ACME_EMAIL}
+	# Browsers send no server name (SNI) when they connect to an IP address,
+	# so tell Caddy which certificate to use then. Harmless with a domain.
+	default_sni {$API_DOMAIN}
 }
 
 {$API_DOMAIN} {
+	tls {
+		# Let's Encrypt issues certificates for an IP address only with its
+		# 6-day "shortlived" profile. It works for a domain too, and Caddy
+		# renews either well before it expires.
+		issuer acme {
+			profile shortlived
+		}
+	}
+
 	encode zstd gzip
 
 	reverse_proxy api:8000 {
