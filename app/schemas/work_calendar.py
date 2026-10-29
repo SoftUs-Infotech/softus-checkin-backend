@@ -16,6 +16,22 @@ class OverrideCreate(BaseModel):
     reason: str = Field(min_length=3, max_length=300)
 
 
+class FullDayCreate(BaseModel):
+    """Count a date as a full day for everybody who punched in."""
+
+    date: date_type
+    reason: str = Field(default="", max_length=300)
+
+
+class FullDayOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    date: str
+    reason: str = ""
+    set_by_email: str | None = None
+
+
 class SwapCreate(BaseModel):
     """"The third Saturday off instead of the second" — both halves, one call."""
 
@@ -53,9 +69,12 @@ class DayOut(BaseModel):
     is_undecided: bool = False
     swap_with_date: str | None = None
     holiday_name: str | None = None
+    #: Counted as a full day for everybody who punched in, however long they stayed.
+    full_day: bool = False
+    full_day_reason: str | None = None
 
     @classmethod
-    def from_decision(cls, decision) -> "DayOut":
+    def from_decision(cls, decision, full_day: dict | None = None) -> "DayOut":
         from app.schemas.shift import WEEKDAY_NAMES
 
         return cls(
@@ -67,6 +86,8 @@ class DayOut(BaseModel):
             is_undecided=decision.is_undecided,
             swap_with_date=decision.swap_with_date,
             holiday_name=decision.holiday_name,
+            full_day=full_day is not None,
+            full_day_reason=(full_day or {}).get("reason") or None,
         )
 
 

@@ -38,8 +38,13 @@ from app.db.mongo import Collections, get_collection
 from app.models.audit_log import AuditAction, AuditEntity
 from app.models.base import serialize
 from app.models.settings import OrgSettings
-from app.models.work_calendar import DayKind, OverrideSource, WorkCalendarOverride
-from app.schemas.work_calendar import OverrideCreate, SwapCreate
+from app.models.work_calendar import (
+    DayKind,
+    FullDayCredit,
+    OverrideSource,
+    WorkCalendarOverride,
+)
+from app.schemas.work_calendar import FullDayCreate, OverrideCreate, SwapCreate
 from app.services import audit
 from app.services import comp_off as comp_off_service
 from app.services import holiday as holiday_service
@@ -412,6 +417,79 @@ async def remove_override(day: date, actor: Actor) -> None:
         AuditEntity.WORK_CALENDAR,
         entity_id=existing["id"],
         entity_label=date_key(day),
+        before=existing,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# days counted as a full day
+# --------------------------------------------------------------------------- #
+def _full_days():
+    return get_collection(Collections.FULL_DAY_CREDITS)
+
+
+async def full_day_map(start: date, end: date) -> dict[str, dict[str, Any]]:
+    """``{date_key: ruling}`` for the dates in a range counted as a full day."""
+    cursor = _full_days().find({"date": {"$gte": date_key(start), "$lte": date_key(end)}})
+    return {
+        document["date"]: serialize(document)
+        for document in await cursor.to_list(length=400)
+    }
+
+
+async def is_full_day(day: date) -> bool:
+    return await _full_days().count_documents({"date": date_key(day)}, limit=1) > 0
+
+
+async def set_full_day(payload: FullDayCreate, actor: Actor) -> dict[str, Any]:
+    """Count a date as a full day for everybody who punched in.
+
+    Re-marking an already marked date only updates the reason. Re-judging the
+    days already recorded is the caller's job, so this module stays free of the
+    attendance engine that depends on it.
+    """
+    day_key = date_key(payload.date)
+    existing = serialize(await _full_days().find_one({"date": day_key}))
+    ruling = FullDayCredit(
+        date=day_key,
+        reason=payload.reason.strip(),
+        set_by=actor.id,
+        set_by_email=actor.email,
+    ).to_mongo()
+    ruling.pop("created_at", None)
+    await _full_days().update_one(
+        {"date": day_key},
+        {"$set": ruling, "$setOnInsert": {"created_at": utc_now()}},
+        upsert=True,
+    )
+    saved = serialize(await _full_days().find_one({"date": day_key}))
+    # It changes what people are paid for the day, so who decided is on record.
+    await audit.record(
+        actor,
+        AuditAction.UPDATE if existing else AuditAction.CREATE,
+        AuditEntity.WORK_CALENDAR,
+        entity_id=saved["id"],
+        entity_label=f"{day_key} counted as a full day",
+        before=existing,
+        after=saved,
+    )
+    return saved
+
+
+async def clear_full_day(day: date, actor: Actor) -> None:
+    day_key = date_key(day)
+    existing = serialize(await _full_days().find_one({"date": day_key}))
+    if existing is None:
+        raise NotFoundError(
+            f"{day_key} is not counted as a full day.", code="FULL_DAY_NOT_FOUND"
+        )
+    await _full_days().delete_one({"date": day_key})
+    await audit.record(
+        actor,
+        AuditAction.DELETE,
+        AuditEntity.WORK_CALENDAR,
+        entity_id=existing["id"],
+        entity_label=f"{day_key} no longer counted as a full day",
         before=existing,
     )
 

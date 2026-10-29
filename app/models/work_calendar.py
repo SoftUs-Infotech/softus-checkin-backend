@@ -43,3 +43,20 @@ class WorkCalendarOverride(MongoModel):
 
     set_by: PyObjectId | None = None
     set_by_email: str | None = None
+
+
+class FullDayCredit(MongoModel):
+    """A date that counts as a full day for everybody who came in.
+
+    For the day the office deliberately opens for three or four hours: the
+    punches are still recorded, but nobody who turned up is short, half-day or
+    late for it. Separate from the working/off ruling above because the two
+    answer different questions — an ordinary open Saturday has no ruling at
+    all, and must not need one to be marked.
+    """
+
+    date: str
+    reason: str = Field(default="", max_length=300)
+
+    set_by: PyObjectId | None = None
+    set_by_email: str | None = None

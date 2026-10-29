@@ -36,6 +36,7 @@ class Collections:
     AUDIT_LOGS = "audit_logs"
     SETTINGS = "settings"
     WORK_CALENDAR = "work_calendar"
+    FULL_DAY_CREDITS = "full_day_credits"
     COMP_OFFS = "comp_offs"
     SALARIES = "salaries"
     SALARY_ADJUSTMENTS = "salary_adjustments"

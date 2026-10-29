@@ -84,6 +84,9 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("date", ASCENDING)], unique=True, name="uniq_work_calendar_date"),
         IndexModel([("swap_with_date", ASCENDING)], name="work_calendar_swap"),
     ],
+    Collections.FULL_DAY_CREDITS: [
+        IndexModel([("date", ASCENDING)], unique=True, name="uniq_full_day_date"),
+    ],
     Collections.COMP_OFFS: [
         IndexModel([("user_id", ASCENDING), ("status", ASCENDING)], name="comp_off_user_status"),
         IndexModel([("expires_on", ASCENDING)], name="comp_off_expiry"),

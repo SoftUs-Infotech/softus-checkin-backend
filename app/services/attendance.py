@@ -162,6 +162,7 @@ async def recompute_day(
         working_day=await work_calendar_service.is_working_day(day, user=user),
         employed_from=employment_start(user),
         tracking_from=await settings_service.tracking_start(),
+        full_day=await work_calendar_service.is_full_day(day),
     )
 
     update = {
@@ -194,6 +195,22 @@ async def recompute_day(
     enriched["shortfall_minutes"] = computed.shortfall_minutes
     enriched["has_open_session"] = computed.has_open_session
     return enriched
+
+
+async def recompute_everyone_on(day: date) -> int:
+    """Re-judge every recorded day on a date, after a ruling about that date.
+
+    Only stored days change: somebody with no record on the date did not come
+    in, and a ruling that counts the day as full for those who did leaves them
+    exactly as they were. Salary reads the stored status and late mark, so this
+    is what carries the ruling into pay. Returns how many days were re-judged.
+    """
+    cursor = _attendance().find({"date": date_key(day)}, {"user_id": 1})
+    user_ids = [document["user_id"] for document in await cursor.to_list(length=None)]
+    for user_id in user_ids:
+        with suppress(NotFoundError):  # an account removed since it punched
+            await recompute_day(user_id, day)
+    return len(user_ids)
 
 
 def to_day_out(record: dict[str, Any]) -> AttendanceDayOut:
@@ -616,6 +633,7 @@ async def month_calendar(user: dict[str, Any], year: int, month: int) -> MonthCa
     summary = MonthSummary()
     employed_from = employment_start(user)
     tracking_from = await settings_service.tracking_start()
+    full_days = await work_calendar_service.full_day_map(first, last)
 
     for day in iter_dates(first, last):
         day_key = date_key(day)
@@ -633,6 +651,7 @@ async def month_calendar(user: dict[str, Any], year: int, month: int) -> MonthCa
             working_day=rulings.get(day_key),
             employed_from=employed_from,
             tracking_from=tracking_from,
+            full_day=day_key in full_days,
         )
 
         record = serialize(document) if document else {"date": day_key, "sessions": []}
@@ -897,6 +916,7 @@ async def register(query: RegisterQuery) -> tuple[list[AttendanceDayOut], Regist
     today = org_today()
     now = utc_now()
     holidays = await holiday_service.holiday_map(start, end)
+    full_days = await work_calendar_service.full_day_map(start, end)
 
     stored: dict[tuple[str, str], dict[str, Any]] = {}
     if employees:
@@ -942,6 +962,7 @@ async def register(query: RegisterQuery) -> tuple[list[AttendanceDayOut], Regist
                 working_day=rulings.get(day_key),
                 employed_from=employment_start(user),
                 tracking_from=tracking_from,
+                full_day=day_key in full_days,
             )
 
             record = serialize(document) if document else {"date": day_key, "sessions": []}

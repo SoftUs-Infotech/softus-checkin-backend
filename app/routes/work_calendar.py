@@ -9,14 +9,18 @@ from datetime import date
 
 from fastapi import APIRouter, Query, status
 
+from app.core.datetime import month_range
 from app.schemas.comp_off import CompOffBalanceOut, CompOffOut
 from app.schemas.work_calendar import (
     DayOut,
+    FullDayCreate,
+    FullDayOut,
     MonthCalendarOut,
     OverrideCreate,
     OverrideOut,
     SwapCreate,
 )
+from app.services import attendance as attendance_service
 from app.services import comp_off as comp_off_service
 from app.services import work_calendar as calendar_service
 from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser
@@ -32,12 +36,16 @@ async def month_calendar(
     month: int = Query(ge=1, le=12),
 ) -> dict:
     decisions = await calendar_service.month_decisions(year, month, user=current_user)
+    full_days = await calendar_service.full_day_map(*month_range(year, month))
     return success(
         MonthCalendarOut(
             year=year,
             month=month,
             working_days=calendar_service.count_working_days(decisions),
-            days=[DayOut.from_decision(decision) for decision in decisions],
+            days=[
+                DayOut.from_decision(decision, full_days.get(decision.date))
+                for decision in decisions
+            ],
         )
     )
 
@@ -45,7 +53,8 @@ async def month_calendar(
 @router.get("/day", summary="What one date is, and which rule decided it")
 async def day(current_user: CurrentUser, on: date) -> dict:
     decision = await calendar_service.decide(on, user=current_user)
-    return success(DayOut.from_decision(decision))
+    full_days = await calendar_service.full_day_map(on, on)
+    return success(DayOut.from_decision(decision, full_days.get(decision.date)))
 
 
 @router.get("/overrides", summary="Per-date rulings in a range")
@@ -75,6 +84,43 @@ async def set_override(payload: OverrideCreate, _: CurrentAdmin, actor: CurrentA
 async def remove_override(on: date, _: CurrentAdmin, actor: CurrentActor) -> dict:
     await calendar_service.remove_override(on, actor)
     return success(message="Ruling removed.")
+
+
+@router.get("/full-days", summary="Dates counted as a full day for everybody who came in")
+async def list_full_days(_: CurrentUser, from_date: date, to_date: date) -> dict:
+    rulings = await calendar_service.full_day_map(from_date, to_date)
+    return success(
+        [FullDayOut.model_validate(item) for _, item in sorted(rulings.items())]
+    )
+
+
+@router.post("/full-days", summary="Count a date as a full day for everybody who came in")
+async def set_full_day(payload: FullDayCreate, _: CurrentAdmin, actor: CurrentActor) -> dict:
+    """For the day the office opens for a few hours on purpose.
+
+    Everybody who punched in that date is present for a full day — no half
+    day, no short hours, no late mark — whenever this is set, before they
+    arrive or after they have all gone home. Leave and absence are untouched.
+    """
+    ruling = await calendar_service.set_full_day(payload, actor)
+    updated = await attendance_service.recompute_everyone_on(payload.date)
+    return success(
+        FullDayOut.model_validate(ruling),
+        message=(
+            f"{ruling['date']} counts as a full day for everybody who came in. "
+            f"{updated} attendance record(s) updated."
+        ),
+    )
+
+
+@router.delete("/full-days/{on}", summary="Judge a date by its hours again")
+async def clear_full_day(on: date, _: CurrentAdmin, actor: CurrentActor) -> dict:
+    await calendar_service.clear_full_day(on, actor)
+    updated = await attendance_service.recompute_everyone_on(on)
+    return success(
+        {"updated": updated},
+        message=f"{on.isoformat()} is judged by hours worked again.",
+    )
 
 
 @router.post(

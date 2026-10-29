@@ -202,6 +202,7 @@ def compute_day_status(
     working_day: bool | None = None,
     employed_from: date | None = None,
     tracking_from: date | None = None,
+    full_day: bool = False,
 ) -> DayComputation:
     """Decide what a single day means. See the module docstring for precedence.
 
@@ -213,6 +214,12 @@ def compute_day_status(
     ``employed_from`` is :func:`employment_start` for the person. A day before
     it with punches on it is still judged: somebody evidently worked it, and a
     joining date typed a week late must not erase that.
+
+    ``full_day`` is an administrator's ruling that the date counts as a full day
+    for everybody who came in — the Saturday the office opened for three hours
+    on purpose. Anybody who punched is present with no late mark and no
+    shortfall, however long they stayed; the punches themselves are kept as
+    recorded. Leave, holidays and absence are judged as on any other day.
     """
     raw_minutes, has_open, first_in, last_out = summarise_sessions(
         sessions,
@@ -228,14 +235,17 @@ def compute_day_status(
     expected = expected_minutes_for(shift, leave_day_part)
     grace_day = tracking_from is not None and day == tracking_from
     # Nobody is late on the day the system went live: the shift had started
-    # long before anybody could punch.
-    late = False if grace_day else is_late_arrival(first_in, shift)
+    # long before anybody could punch. Nor on a day the office chose to keep
+    # short — the hours asked for were not the shift's.
+    late = False if grace_day or full_day else is_late_arrival(first_in, shift)
 
-    def result(status: AttendanceStatus) -> DayComputation:
+    def result(
+        status: AttendanceStatus, *, expected_minutes: int | None = None
+    ) -> DayComputation:
         return DayComputation(
             status=status,
             worked_minutes=worked,
-            expected_minutes=expected,
+            expected_minutes=expected if expected_minutes is None else expected_minutes,
             is_late=late,
             has_open_session=has_open,
             first_punch_in=first_in,
@@ -294,6 +304,13 @@ def compute_day_status(
         if day == today:
             return result(AttendanceStatus.NOT_STARTED)
         return result(AttendanceStatus.NOT_TRACKED)
+
+    # A day ruled a full day: being there is what counts, not for how long.
+    # Asked for no more than was worked, so the month shows no shortfall for it.
+    if full_day and session_count:
+        if has_open and day == today:
+            return result(AttendanceStatus.IN_PROGRESS)
+        return result(AttendanceStatus.PRESENT, expected_minutes=min(expected, worked))
 
     # 5. An unfinished session: still working today, forgotten if it is not.
     if has_open:
