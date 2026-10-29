@@ -45,6 +45,21 @@ class DeductionLine(BaseModel):
     label: str
     days: float
     amount: float
+    #: Set on the hours-short line of somebody paid by the hour.
+    hours: float | None = None
+
+
+class HoursOut(BaseModel):
+    """An hourly-paid month, in minutes. ``share`` is the part of the amount earned."""
+
+    expected_minutes: int
+    worked_minutes: int
+    paid_leave_minutes: int
+    full_day_minutes: int
+    pending_minutes: int
+    untracked_minutes: int
+    credited_minutes: int
+    share: float
 
 
 class AdjustmentLine(BaseModel):
@@ -64,6 +79,7 @@ class ProjectionOut(BaseModel):
     user_id: str
     user_name: str | None = None
     user_email: str | None = None
+    employment_type: str = "FULL_TIME"
     has_salary_on_record: bool
 
     month: str
@@ -71,6 +87,10 @@ class ProjectionOut(BaseModel):
     effective_from: str | None = None
     day_basis: str
     day_rate: float
+    #: "DAYS" docks absences by the day; "HOURS" pays the amount in proportion
+    #: to the hours worked (interns and part-timers).
+    pay_basis: str = "DAYS"
+    hours: HoursOut | None = None
 
     counts: dict[str, float]
     deductions: list[DeductionLine] = Field(default_factory=list)

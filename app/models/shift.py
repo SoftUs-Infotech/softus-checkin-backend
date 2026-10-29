@@ -34,6 +34,11 @@ class Shift(MongoModel):
     required_minutes: int = Field(default=540, ge=1, le=24 * 60)
     half_day_minutes: int = Field(default=240, ge=1, le=24 * 60)
     grace_minutes: int = Field(default=15, ge=0, le=240)
+    # How long after the grace period an arrival still counts as late. Past it,
+    # somebody is arriving for the afternoon — an intern coming from college —
+    # not arriving late for the morning. 0 means no limit: anything after the
+    # grace period is late, which is how every shift behaved before this.
+    late_window_minutes: int = Field(default=0, ge=0, le=12 * 60)
     break_minutes: int = Field(default=0, ge=0, le=8 * 60)
 
     working_weekdays: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])

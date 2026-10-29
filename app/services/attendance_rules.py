@@ -130,7 +130,12 @@ def apply_break_deduction(
 def is_late_arrival(
     first_punch_in: datetime | None, shift: dict[str, Any] | None
 ) -> bool:
-    """Later than the shift start plus its grace period, in local time."""
+    """Later than the shift start plus its grace period, in local time.
+
+    A shift with a late window only calls a *morning* arrival late: after the
+    grace period and within the window. Later than that the person came for
+    the afternoon — an intern straight from college — which is not lateness.
+    """
     if first_punch_in is None or not shift:
         return False
     start = str(_shift_value(shift, "start_time", "")).strip()
@@ -146,7 +151,10 @@ def is_late_arrival(
     local = to_org_tz(first_punch_in)
     minutes_in = local.hour * 60 + local.minute
     allowed = shift_start.hour * 60 + shift_start.minute + grace
-    return minutes_in > allowed
+    if minutes_in <= allowed:
+        return False
+    window = int(_shift_value(shift, "late_window_minutes", 0) or 0)
+    return window <= 0 or minutes_in <= allowed + window
 
 
 def expected_minutes_for(

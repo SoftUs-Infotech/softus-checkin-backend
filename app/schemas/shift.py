@@ -37,6 +37,7 @@ class ShiftBase(BaseModel):
     required_minutes: int = Field(default=540, ge=1, le=24 * 60)
     half_day_minutes: int = Field(default=240, ge=1, le=24 * 60)
     grace_minutes: int = Field(default=15, ge=0, le=240)
+    late_window_minutes: int = Field(default=0, ge=0, le=12 * 60)
     break_minutes: int = Field(default=0, ge=0, le=8 * 60)
     working_weekdays: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])
     description: str | None = Field(default=None, max_length=500)
@@ -74,6 +75,7 @@ class ShiftUpdate(BaseModel):
     required_minutes: int | None = Field(default=None, ge=1, le=24 * 60)
     half_day_minutes: int | None = Field(default=None, ge=1, le=24 * 60)
     grace_minutes: int | None = Field(default=None, ge=0, le=240)
+    late_window_minutes: int | None = Field(default=None, ge=0, le=12 * 60)
     break_minutes: int | None = Field(default=None, ge=0, le=8 * 60)
     working_weekdays: list[int] | None = None
     description: str | None = Field(default=None, max_length=500)
@@ -106,6 +108,7 @@ class ShiftOut(BaseModel):
     required_minutes: int
     half_day_minutes: int
     grace_minutes: int
+    late_window_minutes: int = 0
     break_minutes: int
     working_weekdays: list[int]
     working_weekday_names: list[str] = Field(default_factory=list)

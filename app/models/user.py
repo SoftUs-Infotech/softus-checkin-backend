@@ -20,6 +20,15 @@ class UserRole(StrEnum):
     EMPLOYEE = "EMPLOYEE"
 
 
+class EmploymentType(StrEnum):
+    """How somebody is engaged — which decides how their pay is worked out."""
+
+    FULL_TIME = "FULL_TIME"
+    # Interns and part-timers: paid a fixed monthly amount in proportion to the
+    # hours they put in, rather than docked by the day.
+    PART_TIME = "PART_TIME"
+
+
 class UserStatus(StrEnum):
     INVITED = "INVITED"
     ACTIVE = "ACTIVE"
@@ -87,6 +96,7 @@ class User(MongoModel):
     employee_code: str | None = None
     designation: str | None = None
     department: str | None = None
+    employment_type: EmploymentType = EmploymentType.FULL_TIME
 
     role: UserRole = UserRole.EMPLOYEE
     status: UserStatus = UserStatus.INVITED

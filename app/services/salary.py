@@ -35,7 +35,7 @@ from app.models.base import serialize
 from app.models.correction import ApprovalStatus
 from app.models.salary import Salary, SalaryAdjustment, SalaryAdjustmentKind
 from app.models.settings import SalaryDayBasis
-from app.models.user import UserStatus
+from app.models.user import EmploymentType, UserStatus
 from app.schemas.salary import SalaryCreate
 from app.services import audit
 from app.services import holiday as holiday_service
@@ -43,7 +43,10 @@ from app.services import settings as settings_service
 from app.services import shift as shift_service
 from app.services import user as user_service
 from app.services import work_calendar as calendar_service
-from app.services.attendance_rules import employment_start
+from app.services.attendance_rules import (
+    DEFAULT_REQUIRED_MINUTES,
+    employment_start,
+)
 from app.services.audit import Actor
 
 #: Statuses that mean the day was worked and nothing is owed back.
@@ -99,6 +102,57 @@ class DayCounts:
 
 
 @dataclass(slots=True)
+class HourCounts:
+    """The month in minutes, for somebody paid by the hours they put in.
+
+    ``expected`` is every working day of the month at the shift's hours — the
+    whole month, including days before joining, because the fixed amount is
+    for a whole month. Everything else is what counts towards it.
+    """
+
+    expected_minutes: int = 0
+    #: Punched on days that have already happened.
+    worked_minutes: int = 0
+    #: Paid leave, at the shift's hours for the part of the day taken.
+    paid_leave_minutes: int = 0
+    #: A day ruled a full day pays its full hours, however few were punched.
+    full_day_minutes: int = 0
+    #: Days still to come, assumed worked — as the day-based projection does.
+    pending_minutes: int = 0
+    #: Up to and including go-live: paid in full.
+    untracked_minutes: int = 0
+
+    @property
+    def credited_minutes(self) -> int:
+        return (
+            self.worked_minutes
+            + self.paid_leave_minutes
+            + self.full_day_minutes
+            + self.pending_minutes
+            + self.untracked_minutes
+        )
+
+    @property
+    def share(self) -> float:
+        """The part of the fixed amount earned, never more than all of it."""
+        if self.expected_minutes <= 0:
+            return 0.0
+        return min(1.0, self.credited_minutes / self.expected_minutes)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "expected_minutes": self.expected_minutes,
+            "worked_minutes": self.worked_minutes,
+            "paid_leave_minutes": self.paid_leave_minutes,
+            "full_day_minutes": self.full_day_minutes,
+            "pending_minutes": self.pending_minutes,
+            "untracked_minutes": self.untracked_minutes,
+            "credited_minutes": self.credited_minutes,
+            "share": round(self.share, 4),
+        }
+
+
+@dataclass(slots=True)
 class Projection:
     user_id: str
     month: str
@@ -109,6 +163,8 @@ class Projection:
     counts: DayCounts
     deductions: list[dict[str, Any]] = field(default_factory=list)
     adjustments: list[dict[str, Any]] = field(default_factory=list)
+    #: Set for somebody paid by the hour; None for the day-based majority.
+    hours: HourCounts | None = None
 
     @property
     def total_deduction(self) -> float:
@@ -257,6 +313,35 @@ def deduction_lines(
     ]
 
 
+def _hours(minutes: int) -> float:
+    return round(minutes / 60, 2)
+
+
+def hours_lines(monthly_ctc: float, hours: HourCounts) -> list[dict[str, Any]]:
+    """The one deduction an hourly-paid month has: the hours it fell short by.
+
+    It replaces the day-based lines rather than adding to them. Absences, half
+    days and late arrivals are already in the hours — charging them again would
+    take the same time off twice.
+    """
+    shortfall = round(monthly_ctc * (1 - hours.share), 2)
+    if shortfall <= 0:
+        return []
+    missing = max(0, hours.expected_minutes - hours.credited_minutes)
+    return [
+        {
+            "kind": "HOURS_SHORT",
+            "label": (
+                f"Hours short ({_hours(hours.credited_minutes):g} of "
+                f"{_hours(hours.expected_minutes):g} h)"
+            ),
+            "days": 0,
+            "hours": _hours(missing),
+            "amount": shortfall,
+        }
+    ]
+
+
 def adjustment_lines(
     adjustments: list[dict[str, Any]], *, day_rate: float
 ) -> list[dict[str, Any]]:
@@ -302,6 +387,7 @@ def build_projection(
     salary: dict[str, Any] | None,
     org: dict[str, Any],
     adjustments: list[dict[str, Any]],
+    hours: HourCounts | None = None,
 ) -> Projection:
     monthly_ctc = float((salary or {}).get("monthly_ctc", 0) or 0)
     basis = org.get("salary_day_basis", SalaryDayBasis.WORKING_DAYS)
@@ -319,8 +405,13 @@ def build_projection(
         day_rate=rate,
         day_basis=str(basis),
         counts=counts,
-        deductions=deduction_lines(counts, day_rate=rate, flags=org),
+        deductions=(
+            hours_lines(monthly_ctc, hours)
+            if hours is not None
+            else deduction_lines(counts, day_rate=rate, flags=org)
+        ),
         adjustments=adjustment_lines(adjustments, day_rate=rate),
+        hours=hours,
     )
 
 
@@ -589,6 +680,64 @@ def _count_month(
     return counts
 
 
+def _count_hours(
+    decisions: list[calendar_service.DayDecision],
+    *,
+    today: date,
+    attendance: dict[str, dict[str, Any]],
+    leave: dict[str, dict[str, Any]],
+    holidays: dict[str, Any],
+    shift: dict[str, Any] | None,
+    full_days: dict[str, Any],
+    employed_from: date | None = None,
+    tracking_from: date | None = None,
+) -> HourCounts:
+    """What an hourly-paid month asked for, and what counts towards it.
+
+    Hours are pooled across the month: a long Tuesday makes up for a short
+    Monday, because the fixed amount is for the month, not for each day.
+    """
+    hours = HourCounts()
+    for decision in decisions:
+        day_key = decision.date
+        if decision.source == calendar_service.SOURCE_HOLIDAY or (
+            day_key in holidays and not decision.is_working
+        ):
+            continue
+        if not decision.is_working:
+            continue
+
+        stored = attendance.get(day_key) or {}
+        day_shift = stored.get("shift_snapshot") or shift or {}
+        required = int(day_shift.get("required_minutes") or DEFAULT_REQUIRED_MINUTES)
+        hours.expected_minutes += required
+
+        # Before joining: part of the month, earning nothing. A day with a
+        # record on it is judged on the record, as the day count does.
+        if employed_from is not None and decision.day < employed_from and not stored:
+            continue
+        if tracking_from is not None and decision.day <= tracking_from:
+            hours.untracked_minutes += required
+            continue
+        if decision.day >= today:
+            hours.pending_minutes += required
+            continue
+
+        weight = 1.0
+        leave_day = leave.get(day_key)
+        if leave_day:
+            taken = 1.0 if leave_day["day_part"] == "FULL" else 0.5
+            if leave_day["is_paid"]:
+                hours.paid_leave_minutes += round(required * taken)
+            weight = 1.0 - taken
+
+        worked = int(stored.get("worked_minutes") or 0)
+        hours.worked_minutes += worked
+        if day_key in full_days and stored.get("sessions") and weight > 0:
+            hours.full_day_minutes += max(0, round(required * weight) - worked)
+    return hours
+
+
 async def project_month(
     user_ids: list[str], month: str, *, today: date | None = None
 ) -> list[dict[str, Any]]:
@@ -610,6 +759,7 @@ async def project_month(
     # projection that disagrees with the calendar is worse than either.
     working_saturdays, fifth = await calendar_service.saturday_pattern()
     tracking_from = await settings_service.tracking_start()
+    full_days = await calendar_service.full_day_map(first, last)
 
     attendance = await _attendance_map(user_ids, first, last)
     leave = await _leave_day_map(user_ids, first, last)
@@ -643,6 +793,20 @@ async def project_month(
             tracking_from=tracking_from,
         )
 
+        hours = None
+        if user.get("employment_type") == EmploymentType.PART_TIME.value:
+            hours = _count_hours(
+                decisions_by_shift[cache_key],
+                today=today,
+                attendance=attendance.get(user_id, {}),
+                leave=leave.get(user_id, {}),
+                holidays=holidays,
+                shift=shift,
+                full_days=full_days,
+                employed_from=employment_start(user),
+                tracking_from=tracking_from,
+            )
+
         history = await list_salaries(user_id)
         salary = salary_in_force(history, on=date_key(last))
         projection = build_projection(
@@ -653,6 +817,7 @@ async def project_month(
             salary=salary,
             org=org,
             adjustments=adjustments.get(user_id, []),
+            hours=hours,
         )
         projections.append(
             {
@@ -661,6 +826,7 @@ async def project_month(
                     part for part in (user.get("first_name"), user.get("last_name")) if part
                 ),
                 "user_email": user.get("email"),
+                "employment_type": user.get("employment_type", EmploymentType.FULL_TIME.value),
                 "has_salary_on_record": salary is not None,
                 **_serialise(projection),
             }
@@ -676,6 +842,8 @@ def _serialise(projection: Projection) -> dict[str, Any]:
         "effective_from": projection.effective_from,
         "day_basis": projection.day_basis,
         "day_rate": projection.day_rate,
+        "pay_basis": "HOURS" if projection.hours is not None else "DAYS",
+        "hours": projection.hours.as_dict() if projection.hours is not None else None,
         "counts": projection.counts.as_dict(),
         "deductions": projection.deductions,
         "adjustments": projection.adjustments,
