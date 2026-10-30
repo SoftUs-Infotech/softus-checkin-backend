@@ -131,9 +131,9 @@ def _earning_from(
 
     Joining plus the waiting period, but never before go-live: days before the
     system was in use earn nothing, so balances start at zero on that day. A
-    record with no joining date gives nothing to wait from or prorate against,
-    so the employee is treated as having been here all along — better than
-    silently crediting nobody.
+    record with no joining date gives nothing to wait from, so the employee is
+    treated as having been here all along — better than silently crediting
+    nobody.
     """
     earning: date | None = None
     joining = user.get("joining_date")
@@ -174,6 +174,16 @@ def cycle_span(key: str) -> tuple[date, date] | None:
     return None
 
 
+def _months(first: date, last: date) -> set[tuple[int, int]]:
+    """Every calendar month the span touches, as (year, month)."""
+    return {
+        (year, month)
+        for year in range(first.year, last.year + 1)
+        for month in range(1, 13)
+        if (first.year, first.month) <= (year, month) <= (last.year, last.month)
+    }
+
+
 def cycle_credit(
     policy: AccrualPolicy,
     cycle: AccrualCycle,
@@ -181,27 +191,26 @@ def cycle_credit(
     earning_from: date | None,
     covered: list[tuple[date, date]] | None = None,
 ) -> float:
-    """A cycle's credit, prorated for the part of it nobody has paid for yet.
+    """A cycle's credit, for the whole months of it nobody has paid for yet.
 
-    Two things shrink it: joining (or go-live) partway through, and days an
-    earlier credit already paid for. The second is what lets an administrator
-    change a type from yearly to monthly mid-year: the year was credited in
-    January, so the monthly cycles that follow add nothing until next year,
-    rather than paying the same months twice.
+    Leave is counted in whole months, never in days: joining (or go-live) on
+    the 30th still earns that month in full, so a monthly type always credits
+    its full amount and a yearly one its share for the months left. Months an
+    earlier credit already paid for are left out, which is what lets an
+    administrator change a type from yearly to monthly mid-year: the year was
+    credited in January, so the monthly cycles that follow add nothing until
+    next year, rather than paying the same months twice.
     """
     amount = float(policy.amount_per_cycle)
     start = max(cycle.start, earning_from) if earning_from else cycle.start
     if start > cycle.end:
         return 0.0
-    whole = (cycle.end - cycle.start).days + 1
-    unpaid = (cycle.end - start).days + 1
+    unpaid = _months(start, cycle.end)
     for first, last in covered or []:
-        overlap = (min(last, cycle.end) - max(first, start)).days + 1
-        if overlap > 0:
-            unpaid -= overlap
-    if unpaid <= 0:
+        unpaid -= _months(first, last)
+    if not unpaid:
         return 0.0
-    return round(amount * unpaid / whole, 2)
+    return round(amount * len(unpaid) / len(_months(cycle.start, cycle.end)), 2)
 
 
 async def _carried_forward(
@@ -278,8 +287,11 @@ async def apply_due_credits(
     )
     query = {"user_id": user["id"], "leave_type_id": leave_type["id"], "year": year}
 
-    balance = await _balances().find_one(query, {"accrual_credits.cycle_key": 1}) or {}
-    paid_keys = {credit["cycle_key"] for credit in balance.get("accrual_credits", [])}
+    balance = await _balances().find_one(query, {"accrual_credits": 1}) or {}
+    paid = {
+        credit["cycle_key"]: float(credit.get("days", 0))
+        for credit in balance.get("accrual_credits", [])
+    }
 
     credited = 0.0
     for cycle in cycles_in_year(policy, year):
@@ -290,10 +302,35 @@ async def apply_due_credits(
         # overlap, and this cycle's own key is guarded by the update below.
         covered = [
             span
-            for key in paid_keys
+            for key in paid
             if key != cycle.key and (span := cycle_span(key)) is not None
         ]
         days = cycle_credit(policy, cycle, earning_from=earning_from, covered=covered)
+
+        # Credits written before leave counted in whole months cut the joining
+        # (or go-live) cycle to its remaining days — 0.08 for joining on the
+        # 30th. Bring that one cycle up to what it earns now. Matching on the
+        # old figure keeps a repeated or concurrent run from topping up twice.
+        if (
+            cycle.key in paid
+            and earning_from
+            and cycle.start <= earning_from <= cycle.end
+            and days > paid[cycle.key]
+        ):
+            await _balances().update_one(
+                {
+                    **query,
+                    "accrual_credits": {
+                        "$elemMatch": {"cycle_key": cycle.key, "days": paid[cycle.key]}
+                    },
+                },
+                {
+                    "$inc": {"allocated": round(days - paid[cycle.key], 2)},
+                    "$set": {"accrual_credits.$.days": days, "updated_at": utc_now()},
+                },
+            )
+            continue
+
         result = await _balances().update_one(
             {**query, "accrual_credits.cycle_key": {"$ne": cycle.key}},
             {
@@ -385,7 +422,7 @@ async def restart_balances(starts_on: date) -> int:
     over into the go-live year or set by hand are dropped, and leave is charged
     again only for requests that start on or after the day. Earlier years are
     history and stay as they were. Accrual itself is not run here: the next read
-    or scheduled run credits from go-live, prorated like a mid-cycle joining.
+    or scheduled run credits from go-live, the go-live month in full.
     Returns how many balances were rebuilt.
     """
     start_key = date_key(starts_on)
@@ -493,8 +530,17 @@ async def adjust_balance(
     changes = {
         key: value
         for key, value in payload.model_dump(exclude_unset=True).items()
-        if value is not None and key != "note"
+        if value is not None and key not in ("note", "available")
     }
+    if payload.available is not None:
+        # "They have 5 days" is what an administrator knows; the figures behind
+        # it are bookkeeping. Keep what was taken or is waiting as it is and
+        # make the earned part whatever gives that balance.
+        carried = float(before.get("carried_forward", 0))
+        owed = float(before.get("used", 0)) + float(before.get("pending", 0))
+        total = payload.available + owed
+        changes["carried_forward"] = round(min(carried, total), 2)
+        changes["allocated"] = round(total - changes["carried_forward"], 2)
     if not changes:
         return before
 

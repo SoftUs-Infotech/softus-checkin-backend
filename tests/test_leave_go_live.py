@@ -14,6 +14,7 @@ from datetime import date
 import pytest
 
 from app.core.datetime import org_today
+from app.db.mongo import Collections
 from tests.conftest import invite_and_accept
 
 pytestmark = pytest.mark.usefixtures("db")
@@ -60,3 +61,41 @@ async def test_monthly_leave_earned_before_go_live_is_wiped(admin_client, api_pr
     after = await _balance(admin_client, api_prefix, user_id, leave_type["id"])
     assert after["allocated"] == 1  # this month only
     assert after["available"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# whole months, and an administrator setting the figure
+# --------------------------------------------------------------------------- #
+async def test_joining_late_in_the_month_still_earns_the_whole_month(
+    db, admin_client, api_prefix
+):
+    leave_type = await _leave_type(
+        admin_client, api_prefix, accrual={"frequency": "MONTHLY", "amount_per_cycle": 1}
+    )
+    session = await invite_and_accept(admin_client, api_prefix, email="late@example.com")
+    user_id = session["user"]["id"]
+    await _reset(admin_client, api_prefix, TODAY)
+    assert (await _balance(admin_client, api_prefix, user_id, leave_type["id"]))["allocated"] == 1
+
+    # A credit written by the old day-wise rule is brought up to the month.
+    await db[Collections.LEAVE_BALANCES].update_one(
+        {"user_id": user_id, "accrual_credits.cycle_key": f"{YEAR}-M{TODAY.month:02d}"},
+        {"$set": {"allocated": 0.08, "accrual_credits.$.days": 0.08}},
+    )
+    after = await _balance(admin_client, api_prefix, user_id, leave_type["id"])
+    assert after["allocated"] == 1 and after["available"] == 1
+
+
+async def test_an_administrator_sets_how_many_days_are_left(admin_client, api_prefix):
+    leave_type = await _leave_type(
+        admin_client, api_prefix, accrual={"frequency": "MONTHLY", "amount_per_cycle": 1}
+    )
+    session = await invite_and_accept(admin_client, api_prefix, email="set@example.com")
+    user_id = session["user"]["id"]
+
+    response = await admin_client.patch(
+        f"{api_prefix}/leave/balances/{user_id}/{leave_type['id']}",
+        json={"available": 4.5, "note": "Brought over from the old register"},
+    )
+    assert response.status_code == 200, response.text
+    assert (await _balance(admin_client, api_prefix, user_id, leave_type["id"]))["available"] == 4.5

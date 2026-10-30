@@ -90,4 +90,6 @@ class LeaveBalanceAdjust(BaseModel):
     allocated: float | None = Field(default=None, ge=0, le=365)
     carried_forward: float | None = Field(default=None, ge=0, le=365)
     used: float | None = Field(default=None, ge=0, le=365)
+    # The balance left to take; the others are worked out from it.
+    available: float | None = Field(default=None, ge=0, le=365, multiple_of=0.5)
     note: str = Field(min_length=3, max_length=500)

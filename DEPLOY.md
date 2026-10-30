@@ -176,12 +176,13 @@ docker compose -f docker-compose.prod.yml up -d
     late or short-day mark;
   - normal rules apply from the next morning;
   - every leave balance is zero on the launch day and accrues from there
-    (a monthly type credits the part of the launch month that is left).
+    (the launch month counts in full: a monthly type credits its whole
+    amount).
 
   That month's salary pays the days up to the launch in full. Nothing is
   deleted, so a wrong date is fixed by resetting again with the right one.
   If people bring leave over from an earlier system, set it per employee after
-  the reset.
+  the reset (Employees → Edit → Leave balances).
 
 ---
 

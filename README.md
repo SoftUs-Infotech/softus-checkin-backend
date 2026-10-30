@@ -226,9 +226,11 @@ policy they were made under.
 
 **Leave accrues on a policy you set.** Frequency (monthly, quarterly, yearly),
 amount per cycle — 0.5 is allowed, which is how "half a day of sick leave per
-month" is expressed — credited at the start or the end of the cycle, prorated
-for somebody who joined mid-cycle, capped on carry-forward, and lapsing at year
-end unless the type says otherwise. Crediting is idempotent: every credit is
+month" is expressed — credited at the start or the end of the cycle, capped on
+carry-forward, and lapsing at year end unless the type says otherwise. Leave is
+counted in whole months, never days: joining on the 30th earns that month's
+full credit, and a yearly type credits its share for the months left. An
+administrator can set any employee's balance by hand. Crediting is idempotent: every credit is
 recorded against a cycle key, so running the job twice never pays twice. A type
 may permit a negative balance; by default it does not.
 
