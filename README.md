@@ -300,25 +300,19 @@ as stale.
 
 ### Where a punch is allowed to come from
 
-Three independent gates, each switchable, checked in this order:
+Any computer, anywhere. Two gates, checked in this order:
 
 1. **`can_punch` on the account.** An administrator oversees attendance rather
    than recording it, so admins are created with this off. A working admin gets
    it back with one flag.
-2. **The device.** `block_mobile_punch` keeps punching on a laptop or desktop.
-3. **The office network.** `enforce_office_network_for_punch` and
-   `enforce_office_network_for_corrections` check the caller's public IP against
-   `office_ip_ranges` — plain addresses or CIDR, both accepted. An empty
-   allowlist can never match, so enforcement cannot pass vacuously. An employee
-   with `wfh_enabled` (optionally date-bounded) is exempt.
+2. **The device.** `block_mobile_punch` keeps punching on a laptop or desktop;
+   phones and tablets are refused.
 
-Refusal is `403 OFFICE_NETWORK_REQUIRED` or `403 PUNCH_NOT_PERMITTED`, and the
-message says what to do instead — file a correction.
-
-**The geofence flags, it never blocks.** With `office_latitude`/`office_longitude`
-set, every punch stores its distance from the office and an `outside_office`
-boolean. A bad GPS fix must not cost somebody their attendance; it costs them a
-line on the administrator's exception feed instead.
+There is no office-network or office-location rule. Both were tried and
+removed: the office's public IP changes with every router restart, and a
+desktop's browser location is an estimate, so either rule refused people who
+were at their desks. Old settings documents may still carry those switches;
+nothing reads them.
 
 **Where a punch happened.** Coordinates are reverse-geocoded into two things: a
 full street address, kept on the day's detail, and a *city*, which is what the
@@ -330,20 +324,9 @@ days by coordinates rounded to four decimal places, so a whole office costs one
 request. On any failure the punch still succeeds and stores coordinates alone —
 geocoding is never allowed to fail a punch.
 
-Punches recorded before the city existed can be named retrospectively:
-
-```bash
-python scripts/backfill_places.py           # report what it would change
-python scripts/backfill_places.py --apply
-```
-
-It touches only punches that have coordinates and no city, and writes no
-attendance figure of any kind.
-
-**Who the caller is, and why it is not the header.** `X-Forwarded-For` is a
-header: it is whatever the sender typed. Reading it from anybody made the
-office-network rule decorative — an employee could punch from a beach by naming
-the office's address in one. `client_ip` now consults forwarding headers only
+**Who the caller is, and why it is not the header.** The audit trail and each
+punch record the caller's address. `X-Forwarded-For` is a header: it is
+whatever the sender typed, so `client_ip` consults forwarding headers only
 when the machine that opened the connection is listed in `TRUSTED_PROXIES`, and
 reads the chain **from the right**, because a proxy *appends* the peer it saw
 and everything left of what infrastructure added is the client's own text. If
@@ -351,19 +334,8 @@ every hop is a trusted proxy, the socket's peer address stands; falling back to
 anything the caller writes would reopen the hole.
 
 `TRUSTED_PROXIES` defaults to loopback, which is what a same-host reverse proxy
-or tunnel client looks like. **Behind a proxy that does not strip an inbound
-`X-Forwarded-For`, this rule cannot be enforced at all** — fix the proxy, or
-leave enforcement off.
-
-**Which network counts as the office.** `GET /settings/network` reports the
-address the API itself judges the caller by, whether the allowlist already
-covers it, and the entry to add if not. The settings screen uses it so an
-administrator standing on the office Wi-Fi can allow that network in one press.
-Sending them to a "what is my IP" site does not work: behind a proxy or a
-tunnel, the address such a site reports is not the one the allowlist compares.
-The suggestion for an IPv6 address is its `/64` prefix rather than the address
-itself, because the back half rotates and pinning it would stop punching within
-a day.
+or tunnel client looks like. Behind a proxy that does not strip an inbound
+`X-Forwarded-For`, the recorded address cannot be trusted — fix the proxy.
 
 ### Email in development
 

@@ -17,9 +17,9 @@ process. Two copies would run every job twice. Scale by choosing a bigger
 instance, not by adding instances or workers.
 
 **Why the browser talks to the API directly** (not through a Vercel rewrite):
-the office-network punch rule needs each employee's real IP address. Caddy
-records it and overwrites any `X-Forwarded-For` a caller sends, so the rule
-cannot be faked with a header.
+the audit trail records each caller's real IP address. Caddy records it and
+overwrites any `X-Forwarded-For` a caller sends, so it cannot be faked with a
+header.
 
 Do the steps in order: the web app needs the API's address, and the API needs
 the web app's.
@@ -162,9 +162,6 @@ docker compose -f docker-compose.prod.yml up -d
 
 ## 9. First-day settings, in the app
 
-- **Settings → Where punching is allowed:** open it *from the office Wi-Fi*
-  and press **Add this network**. The address it shows is the one this API
-  sees for you, which is the one that counts.
 - **Shifts, holidays, leave types, Saturday pattern:** check them before
   inviting anyone. Invite links point at `FRONTEND_URL`.
 - **Leave types:** check each type's accrual (every month, quarter or year) and

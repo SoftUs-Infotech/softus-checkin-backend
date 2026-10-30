@@ -1,31 +1,17 @@
-"""Where a request came from, and whether that counts as the office.
+"""Who is calling.
 
-The office restriction is opt-in policy an administrator turns on, so the
-decision is deliberately two-sided: the caller's address must match the
-allowlist, *and* the allowlist must contain something. An organisation that
-enables enforcement before entering a single range would otherwise let the whole
-internet through while believing itself locked down — the failure would be
-silent, which is the worst kind.
-
-A malformed entry is skipped rather than raised. Somebody mistyping a range in
-the settings screen must not be able to stop the office punching in.
-
-Work from home is the escape hatch, granted per person and optionally
-date-bounded. Everything else — the calendar, leave, tasks — stays reachable
-from anywhere; only punching and filing a correction are pinned to the network.
+The one definition of a request's address — the audit trail records it, so it
+must not be something the caller can type. Punching is not restricted by
+network or location: any computer may punch, and phones and tablets are kept
+out by the device rule instead (``app.utils.device``).
 """
 
 import ipaddress
 from collections.abc import Iterable
-from datetime import date, datetime
-from enum import StrEnum
-from typing import Any
 
 from fastapi import Request
 
 from app.core.config import settings
-from app.core.datetime import date_key, org_today
-from app.core.exceptions import PermissionDeniedError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -33,51 +19,17 @@ logger = get_logger(__name__)
 UNKNOWN_IP = "unknown"
 
 
-class NetworkGate(StrEnum):
-    """Which action is being restricted, and therefore which setting applies."""
-
-    PUNCH = "PUNCH"
-    CORRECTION = "CORRECTION"
-
-
-_SETTING_FOR_GATE = {
-    NetworkGate.PUNCH: "enforce_office_network_for_punch",
-    NetworkGate.CORRECTION: "enforce_office_network_for_corrections",
-}
-
-# Each message ends with the route that is still open to the employee. Being
-# told "no" without being told "instead" is what turns a policy into a support
-# ticket.
-_MESSAGE_FOR_GATE = {
-    NetworkGate.PUNCH: (
-        "Punching in and out is only allowed on the office network, and this "
-        "request did not come from it. If you worked from somewhere else, file "
-        "a correction request for the day and an administrator will regularise "
-        "it for you."
-    ),
-    NetworkGate.CORRECTION: (
-        "Correction requests can only be filed from the office network, and "
-        "this request did not come from it. Ask your administrator to adjust "
-        "the day for you, or file it again from the office."
-    ),
-}
-
-
 def _is_trusted_proxy(ip: str | None) -> bool:
-    return is_office_ip(ip, settings.trusted_proxies)
+    return _in_ranges(ip, settings.trusted_proxies)
 
 
 def client_ip(request: Request) -> str:
     """The caller's address, believing forwarding headers only where earned.
 
-    This is the single definition of "who is calling" — the audit trail records
-    it and the office allowlist judges it, and two definitions would mean those
-    two could disagree about the same request.
-
-    It used to read the left-most entry of ``X-Forwarded-For`` unconditionally,
-    which made the office-network rule decorative: a header is whatever the
-    sender typed, so anybody could punch from anywhere by naming the office's
-    address in one. Two things fix that, and both are needed.
+    This is the single definition of "who is calling", which the audit trail
+    records. A header is whatever the sender typed, so reading the left-most
+    entry of ``X-Forwarded-For`` would let anybody write any address into the
+    record. Two things prevent that, and both are needed.
 
     *Who* is asking. The header is consulted only when the machine that opened
     the connection is a configured trusted proxy. Otherwise the socket's own
@@ -114,8 +66,8 @@ def client_ip(request: Request) -> str:
     return peer or UNKNOWN_IP
 
 
-def is_office_ip(ip: str | None, allowlist: Iterable[str] | None) -> bool:
-    """Is this address covered by the allowlist? Plain addresses and CIDR both."""
+def _in_ranges(ip: str | None, allowlist: Iterable[str] | None) -> bool:
+    """Is this address covered by the list? Plain addresses and CIDR both."""
     entries = [str(entry).strip() for entry in (allowlist or []) if str(entry).strip()]
     if not ip or not entries:
         return False
@@ -127,227 +79,12 @@ def is_office_ip(ip: str | None, allowlist: Iterable[str] | None) -> bool:
 
     for entry in entries:
         try:
-            # A bare address parses as a single-host network, so both forms of
-            # allowlist entry go through the same comparison.
+            # A bare address parses as a single-host network, so both forms
+            # go through the same comparison.
             network = ipaddress.ip_network(entry, strict=False)
         except ValueError:
-            logger.warning("Ignoring malformed office IP range %r.", entry)
+            logger.warning("Ignoring malformed trusted proxy entry %r.", entry)
             continue
         if address in network:
             return True
     return False
-
-
-def _as_date_key(value: Any) -> str | None:
-    """Dates are stored as ``YYYY-MM-DD`` strings, but tolerate real dates too."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return date_key(value.date())
-    if isinstance(value, date):
-        return date_key(value)
-    text = str(value).strip()
-    return text[:10] or None
-
-
-def wfh_active(user: dict[str, Any], today: date) -> bool:
-    """Is this employee approved to work from home on this day?
-
-    Absent dates mean open-ended, which is how a permanently remote employee is
-    represented without inventing a sentinel year.
-    """
-    if not user.get("wfh_enabled"):
-        return False
-
-    day = date_key(today)
-    starts = _as_date_key(user.get("wfh_from"))
-    ends = _as_date_key(user.get("wfh_to"))
-
-    started = not starts or starts <= day
-    not_finished = not ends or day <= ends
-    return started and not_finished
-
-
-async def require_office_network(
-    user: dict[str, Any], ip: str | None, *, gate: NetworkGate
-) -> None:
-    """Enforce the office allowlist for one action. Silent when it is turned off."""
-    from app.services import settings as settings_service
-
-    org_settings = await settings_service.get_settings()
-    if not org_settings.get(_SETTING_FOR_GATE[gate], False):
-        return
-
-    # Where the location rule is on, it decides punching on its own. The IP
-    # rule exists for offices with a fixed address; with a changing one it
-    # refuses the whole office after every router restart, and left switched
-    # on beside the location rule it did exactly that.
-    if gate is NetworkGate.PUNCH and _location_rule_on(org_settings):
-        return
-
-    if wfh_active(user, org_today()):
-        return
-
-    if is_office_ip(ip, org_settings.get("office_ip_ranges")):
-        return
-
-    logger.info(
-        "Blocked %s from %s for %s — outside the office network.",
-        gate.value,
-        ip,
-        user.get("email"),
-    )
-    raise PermissionDeniedError(
-        _MESSAGE_FOR_GATE[gate],
-        code="OFFICE_NETWORK_REQUIRED",
-        details={"ip": ip},
-    )
-
-
-def _location_rule_on(org_settings: dict[str, Any]) -> bool:
-    return bool(org_settings.get("enforce_office_location_for_punch")) and (
-        org_settings.get("office_latitude") is not None
-        and org_settings.get("office_longitude") is not None
-    )
-
-
-def location_view(
-    org_settings: dict[str, Any],
-    latitude: float,
-    longitude: float,
-    accuracy_metres: float | None = None,
-) -> dict[str, Any]:
-    """How far a reading is from the office, and whether that counts as there.
-
-    The one place the geofence is decided, so the punch and the "check this
-    computer" button can never disagree. A desktop has no GPS: its browser
-    reports an estimate (often the same point every time, ±100–300 m), which is
-    why the office point should be captured from an office computer's own
-    reading rather than typed in from a map.
-    """
-    from app.services import geocode as geocode_service
-
-    office_latitude = org_settings.get("office_latitude")
-    office_longitude = org_settings.get("office_longitude")
-    radius = int(org_settings.get("office_radius_metres") or 200)
-    view: dict[str, Any] = {
-        "office_set": office_latitude is not None and office_longitude is not None,
-        "radius_metres": radius,
-        "enforced": bool(org_settings.get("enforce_office_location_for_punch")),
-        "accuracy_metres": round(accuracy_metres) if accuracy_metres is not None else None,
-        "distance_metres": None,
-        "inside": False,
-    }
-    if view["office_set"]:
-        distance = geocode_service.distance_metres(
-            latitude, longitude, office_latitude, office_longitude
-        )
-        view["distance_metres"] = round(distance)
-        view["inside"] = distance <= radius
-    return view
-
-
-async def require_office_location(user: dict[str, Any], location: Any | None) -> None:
-    """Enforce the office geofence on a punch. Silent when it is turned off.
-
-    Work from home lifts it exactly as it lifts the network rule.
-    """
-    from app.services import settings as settings_service
-
-    org_settings = await settings_service.get_settings()
-    if not org_settings.get("enforce_office_location_for_punch"):
-        return
-    if org_settings.get("office_latitude") is None or org_settings.get("office_longitude") is None:
-        return
-    if wfh_active(user, org_today()):
-        return
-    if location is None:
-        raise PermissionDeniedError(
-            "Punching is only allowed at the office, and your browser did not share "
-            "a location. Allow location access for this site and try again.",
-            code="LOCATION_REQUIRED",
-        )
-
-    view = location_view(
-        org_settings, location.latitude, location.longitude, location.accuracy_metres
-    )
-    if view["inside"]:
-        return
-
-    accuracy = (
-        f" Your browser's reading is accurate to about ±{view['accuracy_metres']} m."
-        if view["accuracy_metres"] is not None
-        else ""
-    )
-    logger.info(
-        "Blocked PUNCH for %s — %s m from the office (radius %s m).",
-        user.get("email"),
-        view["distance_metres"],
-        view["radius_metres"],
-    )
-    raise PermissionDeniedError(
-        f"Punching is only allowed at the office. This computer is about "
-        f"{view['distance_metres']} m away; the limit is {view['radius_metres']} m."
-        f"{accuracy} If you are at the office, ask an administrator to check the "
-        "office location; if you worked elsewhere, file a correction for the day.",
-        code="OFFICE_LOCATION_REQUIRED",
-        details={
-            "distance_metres": view["distance_metres"],
-            "radius_metres": view["radius_metres"],
-            "accuracy_metres": view["accuracy_metres"],
-        },
-    )
-
-
-def suggest_range(ip: str | None) -> str | None:
-    """The allowlist entry an administrator standing on this network should add.
-
-    A single address is almost never the right entry. An office router's IPv6
-    address changes its interface identifier constantly — the ``/64`` prefix the
-    provider delegates is the part that stays put, so pinning the full address
-    would lock the office out within a day. IPv4 is the opposite: a small office
-    has one public address and a ``/24`` would let in the whole neighbouring
-    block, so the address itself is the honest entry.
-
-    Returns ``None`` for anything unparseable, including a request that reached
-    the API without an address at all.
-    """
-    if not ip or ip == UNKNOWN_IP:
-        return None
-    try:
-        address = ipaddress.ip_address(ip.strip())
-    except ValueError:
-        return None
-
-    if isinstance(address, ipaddress.IPv6Address):
-        return str(ipaddress.ip_network(f"{address}/64", strict=False))
-    return str(address)
-
-
-async def network_view(ip: str | None) -> dict[str, Any]:
-    """What the office-network policy looks like from where this request came.
-
-    Written for the settings screen: an administrator cannot enter the office's
-    address if nothing will tell them what it is, and typing what a "what is my
-    IP" website reports is wrong the moment a proxy sits in front of the API.
-    This reports the address *this service* judges them by, which is the only
-    one the allowlist will ever compare against.
-    """
-    from app.services import settings as settings_service
-
-    org_settings = await settings_service.get_settings()
-    ranges = list(org_settings.get("office_ip_ranges") or [])
-    resolved = None if not ip or ip == UNKNOWN_IP else ip
-
-    return {
-        "your_ip": resolved,
-        "suggested_range": suggest_range(resolved),
-        "matches_allowlist": is_office_ip(resolved, ranges),
-        "office_ip_ranges": ranges,
-        "enforce_office_network_for_punch": bool(
-            org_settings.get("enforce_office_network_for_punch")
-        ),
-        "enforce_office_network_for_corrections": bool(
-            org_settings.get("enforce_office_network_for_corrections")
-        ),
-    }

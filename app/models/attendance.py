@@ -107,8 +107,6 @@ class PunchEvent(MongoModel):
 
     # How far the punch was from the office, when the office has coordinates.
     # A flag, never a refusal: a bad GPS fix must not cost an attendance day.
-    distance_metres: int | None = None
-    outside_office: bool = False
 
     source: PunchSource = PunchSource.WEB
     note: str | None = Field(default=None, max_length=300)

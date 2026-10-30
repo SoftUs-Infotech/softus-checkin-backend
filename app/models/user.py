@@ -126,11 +126,6 @@ class User(MongoModel):
     # personal side of the app back with this flag. See ``default_can_punch``.
     can_punch: bool = True
 
-    # Work from home lifts the office-network restriction for this person only.
-    # Open-ended when the dates are absent.
-    wfh_enabled: bool = False
-    wfh_from: date | None = None
-    wfh_to: date | None = None
 
     notes: str | None = Field(default=None, max_length=2000)
 

@@ -30,8 +30,7 @@ class PunchEventOut(BaseModel):
     """One punch, including where and what it came from.
 
     The device, platform and address are what an administrator reads on the
-    register when a punch looks wrong; ``outside_office`` is a flag on the day,
-    never a rejection of it.
+    register when a punch looks wrong.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -42,8 +41,6 @@ class PunchEventOut(BaseModel):
     accuracy_metres: float | None = None
     address: str | None = None
     city: str | None = None
-    distance_metres: int | None = None
-    outside_office: bool = False
 
     ip: str | None = None
     user_agent: str | None = None

@@ -22,7 +22,6 @@ metres, so everybody punching from the same building shares one row — and expi
 after thirty days, because street names and business names do change.
 """
 
-import math
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -76,7 +75,6 @@ CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
 #: Short on purpose: this call sits inside a punch request.
 REQUEST_TIMEOUT_SECONDS = 4.0
 
-EARTH_RADIUS_METRES = 6_371_000.0
 
 
 @dataclass(frozen=True)
@@ -100,21 +98,6 @@ def _cache():
 def cache_key(latitude: float, longitude: float) -> str:
     return f"{latitude:.{CACHE_PRECISION}f},{longitude:.{CACHE_PRECISION}f}"
 
-
-def distance_metres(
-    latitude: float, longitude: float, other_latitude: float, other_longitude: float
-) -> float:
-    """Great-circle distance between two points, in metres."""
-    phi1 = math.radians(latitude)
-    phi2 = math.radians(other_latitude)
-    delta_phi = math.radians(other_latitude - latitude)
-    delta_lambda = math.radians(other_longitude - longitude)
-
-    a = (
-        math.sin(delta_phi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    )
-    return 2 * EARTH_RADIUS_METRES * math.asin(math.sqrt(a))
 
 
 def _pick(mapping: dict[str, Any], keys: tuple[str, ...]) -> str | None:

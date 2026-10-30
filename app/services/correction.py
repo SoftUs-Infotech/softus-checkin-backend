@@ -29,7 +29,6 @@ from app.services import notification as notification_service
 from app.services import settings as settings_service
 from app.services import user as user_service
 from app.services.audit import Actor
-from app.utils import network
 from app.utils.email import templates
 
 logger = get_logger(__name__)
@@ -96,12 +95,6 @@ def _times_fall_on_the_day(payload: CorrectionCreate) -> None:
 async def create_correction(
     user: dict[str, Any], payload: CorrectionCreate, actor: Actor
 ) -> dict[str, Any]:
-    # Filing a correction can be pinned to the office network too, separately
-    # from punching: it is the one route that can rewrite a day after the fact.
-    await network.require_office_network(
-        user, actor.ip, gate=network.NetworkGate.CORRECTION
-    )
-
     if payload.date > org_today():
         raise ValidationError(
             "A correction cannot be requested for a future date.", code="FUTURE_DATE"

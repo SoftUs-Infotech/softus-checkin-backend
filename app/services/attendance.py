@@ -64,7 +64,6 @@ from app.services import shift as shift_service
 from app.services import work_calendar as work_calendar_service
 from app.services.attendance_rules import compute_day_status, employment_start, format_minutes
 from app.services.audit import Actor
-from app.utils import network
 
 logger = get_logger(__name__)
 
@@ -319,15 +318,15 @@ async def _require_location(payload: PunchRequestBody) -> None:
         )
 
 
-async def _require_punch_permission(user: dict[str, Any], ip: str | None) -> None:
-    """Both gates on punching: the account, then the network it punched from."""
+def _require_punch_permission(user: dict[str, Any]) -> None:
+    """Whether this account punches at all. Where from is not restricted: any
+    computer may punch, and phones and tablets are refused by the device rule."""
     if not user_may_punch(user):
         raise PermissionDeniedError(
             "This account is not set up to punch in and out. Ask an "
             "administrator if you believe that is wrong.",
             code="PUNCH_NOT_PERMITTED",
         )
-    await network.require_office_network(user, ip, gate=network.NetworkGate.PUNCH)
 
 
 async def _punch_event(
@@ -341,9 +340,7 @@ async def _punch_event(
 ) -> dict[str, Any]:
     """One punch, with everything worth knowing about where it came from.
 
-    The geofence flags and never blocks: a phone that put somebody in the next
-    postcode is a bad GPS fix far more often than it is a fraudulent punch, and
-    the cost of being wrong falls on the employee's attendance.
+    Where it happened is recorded, never judged: any computer may punch.
     """
     location = payload.location
     event: dict[str, Any] = {
@@ -353,8 +350,6 @@ async def _punch_event(
         "accuracy_metres": location.accuracy_metres if location else None,
         "address": location.address if location else None,
         "city": None,
-        "distance_metres": None,
-        "outside_office": False,
         "ip": ip,
         "user_agent": user_agent[:400] if user_agent else None,
         "device_class": device_class,
@@ -364,18 +359,6 @@ async def _punch_event(
     }
     if location is None:
         return event
-
-    org_settings = await settings_service.get_settings()
-    office_latitude = org_settings.get("office_latitude")
-    office_longitude = org_settings.get("office_longitude")
-    if office_latitude is not None and office_longitude is not None:
-        distance = geocode_service.distance_metres(
-            location.latitude, location.longitude, office_latitude, office_longitude
-        )
-        event["distance_metres"] = round(distance)
-        event["outside_office"] = distance > int(
-            org_settings.get("office_radius_metres", 200)
-        )
 
     # The browser's own address wins when it sent one, but it never sends a
     # city, and the city is what the register shows — so the lookup runs either
@@ -423,9 +406,8 @@ async def punch_in(
         logger.info("Replayed punch-in ignored for %s", user["email"])
         return await recompute_day(user["id"], day, user=user)
 
-    await _require_punch_permission(user, ip)
+    _require_punch_permission(user)
     await _require_location(payload)
-    await network.require_office_location(user, payload.location)
 
     shift = await shift_for_user(user)
     document = await ensure_day_document(user, day, shift)
@@ -493,9 +475,8 @@ async def punch_out(
         logger.info("Replayed punch-out ignored for %s", user["email"])
         return await recompute_day(user["id"], day, user=user)
 
-    await _require_punch_permission(user, ip)
+    _require_punch_permission(user)
     await _require_location(payload)
-    await network.require_office_location(user, payload.location)
 
     document = await _attendance().find_one({"user_id": user["id"], "date": date_key(day)})
 
@@ -866,8 +847,7 @@ def _needs_attention(record: dict[str, Any]) -> bool:
         return True
 
     return any(
-        event.get("outside_office")
-        or event.get("device_class") in EXCEPTION_DEVICE_CLASSES
+        event.get("device_class") in EXCEPTION_DEVICE_CLASSES
         for event in _punch_events(record)
     )
 

@@ -43,11 +43,6 @@ class UserAdminUpdate(UserProfileUpdate):
     # personal side of the app back with this.
     can_punch: bool | None = None
 
-    # Work from home lifts the office-network restriction for this person only.
-    wfh_enabled: bool | None = None
-    wfh_from: date | None = None
-    wfh_to: date | None = None
-
 
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -71,9 +66,6 @@ class UserOut(BaseModel):
     joining_date: date | None = None
     profile_completed: bool = False
     can_punch: bool = True
-    wfh_enabled: bool = False
-    wfh_from: date | None = None
-    wfh_to: date | None = None
     last_login_at: datetime | None = None
     created_at: datetime | None = None
 

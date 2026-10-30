@@ -169,7 +169,7 @@ async def list_departments() -> list[str]:
 #:
 #: Everything not listed keeps the old behaviour, where a null is ignored —
 #: `first_name` has a minimum length and cannot be empty, and `role`,
-#: `can_punch` and `wfh_enabled` are decisions rather than details, so "clear
+#: `can_punch` is a decision rather than details, so "clear
 #: it" is not a meaningful instruction for them. Clearing `shift_id` is
 #: meaningful: it puts somebody back on the organisation's default shift.
 CLEARABLE_FIELDS = frozenset(
@@ -184,8 +184,6 @@ CLEARABLE_FIELDS = frozenset(
         "shift_to",
         "reporting_manager_id",
         "notes",
-        "wfh_from",
-        "wfh_to",
     }
 )
 
