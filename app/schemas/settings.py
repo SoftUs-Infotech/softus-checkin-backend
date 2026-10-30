@@ -25,6 +25,7 @@ class OrgSettingsUpdate(BaseModel):
     office_latitude: float | None = Field(default=None, ge=-90, le=90)
     office_longitude: float | None = Field(default=None, ge=-180, le=180)
     office_radius_metres: int | None = Field(default=None, ge=10, le=20000)
+    enforce_office_location_for_punch: bool | None = None
 
     late_arrivals_per_half_day: int | None = Field(default=None, ge=0, le=31)
     retro_approval_months: int | None = Field(default=None, ge=0, le=24)
@@ -63,6 +64,7 @@ class OrgSettingsOut(BaseModel):
     office_latitude: float | None = None
     office_longitude: float | None = None
     office_radius_metres: int = 200
+    enforce_office_location_for_punch: bool = False
 
     late_arrivals_per_half_day: int = 0
     retro_approval_months: int = 3
@@ -92,6 +94,14 @@ class OrgSettingsOut(BaseModel):
         data = dict(document)
         data["timezone"] = settings.ORG_TIMEZONE
         return cls.model_validate(data)
+
+
+class LocationCheck(BaseModel):
+    """Where a browser says it is, to be compared with the office."""
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_metres: float | None = Field(default=None, ge=0, le=100_000)
 
 
 class TrackingStartUpdate(BaseModel):

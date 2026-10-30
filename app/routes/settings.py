@@ -5,12 +5,17 @@ from fastapi import APIRouter, Request
 from app.models.audit_log import AuditAction, AuditEntity
 from app.schemas.audit import AuditLogOut
 from app.schemas.common import PaginatedData
-from app.schemas.settings import OrgSettingsOut, OrgSettingsUpdate, TrackingStartUpdate
+from app.schemas.settings import (
+    LocationCheck,
+    OrgSettingsOut,
+    OrgSettingsUpdate,
+    TrackingStartUpdate,
+)
 from app.services import audit as audit_service
 from app.services import leave as leave_service
 from app.services import settings as settings_service
 from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser, Pagination
-from app.utils.network import client_ip, network_view
+from app.utils.network import client_ip, location_view, network_view
 from app.utils.response import success
 
 router = APIRouter(tags=["settings"])
@@ -32,6 +37,22 @@ async def network_check(request: Request, _: CurrentAdmin) -> dict:
     the wrong one locks the office out of punching.
     """
     return success(await network_view(client_ip(request)))
+
+
+@router.post("/settings/location-check", summary="How far this computer is from the office")
+async def location_check(payload: LocationCheck, _: CurrentUser) -> dict:
+    """Compare a browser's reading with the office, by the rule punches use.
+
+    Any signed-in person may ask: it answers a distance, never the office's
+    coordinates, and it is how somebody standing in the office can see whether
+    a punch from this computer would be accepted before they need it to be.
+    """
+    org_settings = await settings_service.get_settings()
+    return success(
+        location_view(
+            org_settings, payload.latitude, payload.longitude, payload.accuracy_metres
+        )
+    )
 
 
 @router.patch("/settings", summary="Update organisation settings")

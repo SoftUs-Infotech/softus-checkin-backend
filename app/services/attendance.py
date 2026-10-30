@@ -425,6 +425,7 @@ async def punch_in(
 
     await _require_punch_permission(user, ip)
     await _require_location(payload)
+    await network.require_office_location(user, payload.location)
 
     shift = await shift_for_user(user)
     document = await ensure_day_document(user, day, shift)
@@ -494,6 +495,7 @@ async def punch_out(
 
     await _require_punch_permission(user, ip)
     await _require_location(payload)
+    await network.require_office_location(user, payload.location)
 
     document = await _attendance().find_one({"user_id": user["id"], "date": date_key(day)})
 

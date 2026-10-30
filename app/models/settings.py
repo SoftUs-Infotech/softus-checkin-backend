@@ -59,11 +59,15 @@ class OrgSettings(MongoModel):
     enforce_office_network_for_corrections: bool = False
     office_ip_ranges: list[str] = Field(default_factory=list)
 
-    # Where the office is. A punch further than the radius is flagged, never
-    # blocked — a bad GPS fix must not cost somebody their attendance.
+    # Where the office is. A punch further than the radius is flagged; with
+    # enforcement on it is refused instead. Enforcement is how "at the office"
+    # is decided when the office's public IP keeps changing — a router restart
+    # or a power cut hands it a new one, and an IP allowlist then locks the
+    # office out.
     office_latitude: float | None = Field(default=None, ge=-90, le=90)
     office_longitude: float | None = Field(default=None, ge=-180, le=180)
     office_radius_metres: int = Field(default=200, ge=10, le=20000)
+    enforce_office_location_for_punch: bool = False
 
     # Lateness with consequences: this many late arrivals in a month cost half
     # a day. Zero switches the policy off.

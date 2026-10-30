@@ -197,6 +197,94 @@ async def require_office_network(
     )
 
 
+def location_view(
+    org_settings: dict[str, Any],
+    latitude: float,
+    longitude: float,
+    accuracy_metres: float | None = None,
+) -> dict[str, Any]:
+    """How far a reading is from the office, and whether that counts as there.
+
+    The one place the geofence is decided, so the punch and the "check this
+    computer" button can never disagree. A desktop has no GPS: its browser
+    reports an estimate (often the same point every time, ±100–300 m), which is
+    why the office point should be captured from an office computer's own
+    reading rather than typed in from a map.
+    """
+    from app.services import geocode as geocode_service
+
+    office_latitude = org_settings.get("office_latitude")
+    office_longitude = org_settings.get("office_longitude")
+    radius = int(org_settings.get("office_radius_metres") or 200)
+    view: dict[str, Any] = {
+        "office_set": office_latitude is not None and office_longitude is not None,
+        "radius_metres": radius,
+        "enforced": bool(org_settings.get("enforce_office_location_for_punch")),
+        "accuracy_metres": round(accuracy_metres) if accuracy_metres is not None else None,
+        "distance_metres": None,
+        "inside": False,
+    }
+    if view["office_set"]:
+        distance = geocode_service.distance_metres(
+            latitude, longitude, office_latitude, office_longitude
+        )
+        view["distance_metres"] = round(distance)
+        view["inside"] = distance <= radius
+    return view
+
+
+async def require_office_location(user: dict[str, Any], location: Any | None) -> None:
+    """Enforce the office geofence on a punch. Silent when it is turned off.
+
+    Work from home lifts it exactly as it lifts the network rule.
+    """
+    from app.services import settings as settings_service
+
+    org_settings = await settings_service.get_settings()
+    if not org_settings.get("enforce_office_location_for_punch"):
+        return
+    if org_settings.get("office_latitude") is None or org_settings.get("office_longitude") is None:
+        return
+    if wfh_active(user, org_today()):
+        return
+    if location is None:
+        raise PermissionDeniedError(
+            "Punching is only allowed at the office, and your browser did not share "
+            "a location. Allow location access for this site and try again.",
+            code="LOCATION_REQUIRED",
+        )
+
+    view = location_view(
+        org_settings, location.latitude, location.longitude, location.accuracy_metres
+    )
+    if view["inside"]:
+        return
+
+    accuracy = (
+        f" Your browser's reading is accurate to about ±{view['accuracy_metres']} m."
+        if view["accuracy_metres"] is not None
+        else ""
+    )
+    logger.info(
+        "Blocked PUNCH for %s — %s m from the office (radius %s m).",
+        user.get("email"),
+        view["distance_metres"],
+        view["radius_metres"],
+    )
+    raise PermissionDeniedError(
+        f"Punching is only allowed at the office. This computer is about "
+        f"{view['distance_metres']} m away; the limit is {view['radius_metres']} m."
+        f"{accuracy} If you are at the office, ask an administrator to check the "
+        "office location; if you worked elsewhere, file a correction for the day.",
+        code="OFFICE_LOCATION_REQUIRED",
+        details={
+            "distance_metres": view["distance_metres"],
+            "radius_metres": view["radius_metres"],
+            "accuracy_metres": view["accuracy_metres"],
+        },
+    )
+
+
 def suggest_range(ip: str | None) -> str | None:
     """The allowlist entry an administrator standing on this network should add.
 

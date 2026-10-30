@@ -97,6 +97,17 @@ async def update_settings(payload: OrgSettingsUpdate, actor: Actor) -> dict[str,
     if not changes:
         return existing
 
+    merged = {**existing, **changes}
+    if merged.get("enforce_office_location_for_punch") and (
+        merged.get("office_latitude") is None or merged.get("office_longitude") is None
+    ):
+        # Enforcement with no office to measure from would refuse every punch
+        # in the organisation, which nobody switching it on means to do.
+        raise ValidationError(
+            "Set the office location before requiring punches to be made there.",
+            code="OFFICE_LOCATION_NOT_SET",
+        )
+
     changes["updated_at"] = utc_now()
     await _settings().update_one({"key": SETTINGS_KEY}, {"$set": changes})
     clear_cache()
