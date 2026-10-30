@@ -211,3 +211,55 @@ async def test_settings_report_the_enforcement(admin_client, api_prefix):
     settings = await admin_client.get(f"{api_prefix}/settings")
 
     assert settings.json()["data"]["enforce_office_location_for_punch"] is True
+
+
+# --------------------------------------------------------------------------- #
+# the IP rule, left switched on underneath
+# --------------------------------------------------------------------------- #
+@pytestmark_db
+async def test_the_location_rule_overrides_an_ip_rule_left_on(db, admin_client, api_prefix):
+    # What production looked like: the IP rule still on, listing an address
+    # the office no longer has after a router restart.
+    from app.models.settings import SETTINGS_KEY
+    from app.services import settings as settings_service
+
+    session = await _employee(admin_client, api_prefix)
+    await _enforce(admin_client, api_prefix)
+    await db[Collections.SETTINGS].update_one(
+        {"key": SETTINGS_KEY},
+        {"$set": {"enforce_office_network_for_punch": True, "office_ip_ranges": ["203.0.113.7"]}},
+    )
+    settings_service.clear_cache()
+
+    response = await _punch_in(session, api_prefix, AT_THE_OFFICE)
+
+    assert response.status_code == 200, response.text
+
+
+@pytestmark_db
+async def test_without_the_location_rule_the_ip_rule_still_applies(admin_client, api_prefix):
+    session = await _employee(admin_client, api_prefix)
+    await admin_client.patch(
+        f"{api_prefix}/settings",
+        json={"enforce_office_network_for_punch": True, "office_ip_ranges": ["203.0.113.7"]},
+    )
+
+    response = await _punch_in(session, api_prefix, AT_THE_OFFICE)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "OFFICE_NETWORK_REQUIRED"
+
+
+@pytestmark_db
+async def test_turning_the_location_rule_on_switches_the_ip_rule_off(admin_client, api_prefix):
+    await admin_client.patch(
+        f"{api_prefix}/settings",
+        json={"enforce_office_network_for_punch": True, "office_ip_ranges": ["203.0.113.7"]},
+    )
+
+    await _enforce(admin_client, api_prefix)
+
+    settings = (await admin_client.get(f"{api_prefix}/settings")).json()["data"]
+    assert settings["enforce_office_location_for_punch"] is True
+    assert settings["enforce_office_network_for_punch"] is False
+    # The correction rule is a separate decision and is left as it was.

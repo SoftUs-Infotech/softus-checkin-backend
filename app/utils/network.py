@@ -178,6 +178,13 @@ async def require_office_network(
     if not org_settings.get(_SETTING_FOR_GATE[gate], False):
         return
 
+    # Where the location rule is on, it decides punching on its own. The IP
+    # rule exists for offices with a fixed address; with a changing one it
+    # refuses the whole office after every router restart, and left switched
+    # on beside the location rule it did exactly that.
+    if gate is NetworkGate.PUNCH and _location_rule_on(org_settings):
+        return
+
     if wfh_active(user, org_today()):
         return
 
@@ -194,6 +201,13 @@ async def require_office_network(
         _MESSAGE_FOR_GATE[gate],
         code="OFFICE_NETWORK_REQUIRED",
         details={"ip": ip},
+    )
+
+
+def _location_rule_on(org_settings: dict[str, Any]) -> bool:
+    return bool(org_settings.get("enforce_office_location_for_punch")) and (
+        org_settings.get("office_latitude") is not None
+        and org_settings.get("office_longitude") is not None
     )
 
 
