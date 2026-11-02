@@ -22,6 +22,7 @@ from app.schemas.work_calendar import (
 )
 from app.services import attendance as attendance_service
 from app.services import comp_off as comp_off_service
+from app.services import leave as leave_service
 from app.services import work_calendar as calendar_service
 from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser
 from app.utils.response import success
@@ -68,6 +69,7 @@ async def list_overrides(_: CurrentUser, from_date: date, to_date: date) -> dict
 )
 async def set_override(payload: OverrideCreate, _: CurrentAdmin, actor: CurrentActor) -> dict:
     result = await calendar_service.set_override(payload, actor)
+    await leave_service.give_back_days_off(payload.date, payload.date)  # a day closed is not leave
     message = "Calendar updated."
     if result["comp_offs_credited"]:
         message += f" {result['comp_offs_credited']} comp-off(s) credited."

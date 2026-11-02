@@ -50,12 +50,11 @@ from app.schemas.common import PaginationParams
 from app.schemas.leave import LeaveApply, LeaveBalanceAdjust, LeaveDecision
 from app.services import attendance as attendance_service
 from app.services import audit
-from app.services import holiday as holiday_service
 from app.services import leave_type as leave_type_service
 from app.services import notification as notification_service
 from app.services import settings as settings_service
 from app.services import user as user_service
-from app.services.attendance_rules import is_working_weekday
+from app.services import work_calendar as work_calendar_service
 from app.services.audit import Actor
 from app.utils.email import templates
 
@@ -570,21 +569,168 @@ async def adjust_balance(
 async def resolve_leave_days(
     user: dict[str, Any], payload: LeaveApply
 ) -> tuple[list[dict[str, Any]], float]:
-    """Strip weekends and holidays, then price what remains."""
-    shift = await attendance_service.shift_for_user(user)
-    holidays = await holiday_service.holiday_map(payload.from_date, payload.to_date)
+    """Keep the days the office expects them in, then price what remains.
 
-    days: list[dict[str, Any]] = []
-    for day in iter_dates(payload.from_date, payload.to_date):
-        day_key = date_key(day)
-        if day_key in holidays:
-            continue
-        if not is_working_weekday(day, shift):
-            continue
-        days.append({"date": day_key, "day_part": payload.day_part.value})
-
+    The work calendar decides, so weekly offs, off-Saturdays, days an
+    administrator closed and holidays are never charged as leave.
+    """
+    decisions = await work_calendar_service.decisions_for_range(
+        payload.from_date, payload.to_date, user=user
+    )
+    days = [
+        {"date": date_key(decision.day), "day_part": payload.day_part.value}
+        for decision in decisions
+        if decision.is_working
+    ]
     total = round(sum(DAY_PART_VALUE[day["day_part"]] for day in days), 2)
     return days, total
+
+
+async def give_back_days_off(start: date, end: date) -> int:
+    """Return leave charged on days that have since stopped being working days.
+
+    A holiday declared (or a day closed) after somebody booked leave across it
+    is no longer leave: the day leaves the request and its balance comes back.
+    A request left with no days is cancelled. Returns how many changed.
+    """
+    keys = [date_key(day) for day in iter_dates(start, end)]
+    tracking_from = await settings_service.tracking_start()
+    requests = await _requests().find(
+        {
+            "is_deleted": False,
+            "status": {"$in": [ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]},
+            "days.date": {"$in": keys},
+        }
+    ).to_list(length=None)
+
+    changed = 0
+    for request in requests:
+        user = serialize(await _users().find_one({"_id": ObjectId(request["user_id"])})) or {
+            "id": request["user_id"]
+        }
+        working = {
+            date_key(decision.day): decision.is_working
+            for decision in await work_calendar_service.decisions_for_range(start, end, user=user)
+        }
+        kept = [day for day in request["days"] if working.get(day["date"], True)]
+        if len(kept) == len(request["days"]):
+            continue
+
+        total = round(sum(DAY_PART_VALUE[day["day_part"]] for day in kept), 2)
+        freed = round(float(request["total_days"]) - total, 2)
+        update: dict[str, Any] = {"days": kept, "total_days": total, "updated_at": utc_now()}
+        if not kept:
+            update["status"] = ApprovalStatus.CANCELLED.value
+        await _requests().update_one({"_id": request["_id"]}, {"$set": update})
+
+        if _counts(request, tracking_from):
+            field = "pending" if request["status"] == ApprovalStatus.PENDING.value else "used"
+            await _move_balance(
+                request["user_id"],
+                request["leave_type_id"],
+                int(request["from_date"][:4]),
+                **{field: -freed},
+            )
+        changed += 1
+    return changed
+
+
+async def requests_between(
+    start: date, end: date, approver: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Pending and approved leave touching a date range — the leave calendar."""
+    query: dict[str, Any] = {
+        "is_deleted": False,
+        "status": {"$in": [ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]},
+        "from_date": {"$lte": date_key(end)},
+        "to_date": {"$gte": date_key(start)},
+        **await user_service.approval_scope(approver, None),
+    }
+    cursor = _requests().find(query).sort("from_date", 1)
+    return [serialize(document) for document in await cursor.to_list(length=None)]
+
+
+async def year_summary(year: int) -> list[dict[str, Any]]:
+    """Per employee: leave taken this year, paid and unpaid, and what is left.
+
+    Unpaid days are the ones the salary deducts.
+    """
+    leave_types = {
+        leave_type["id"]: leave_type
+        for leave_type in await leave_type_service.list_leave_types(include_inactive=True)
+    }
+    users = await _users().find(
+        {"status": UserStatus.ACTIVE.value, "is_deleted": False}
+    ).sort("first_name", 1).to_list(length=None)
+
+    taken: dict[tuple[str, str, str], float] = {}
+    async for row in _requests().aggregate(
+        [
+            {
+                "$match": {
+                    "is_deleted": False,
+                    "status": {"$in": [ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]},
+                    "from_date": {"$gte": f"{year}-01-01", "$lte": f"{year}-12-31"},
+                }
+            },
+            {
+                "$group": {
+                    "_id": {"user": "$user_id", "type": "$leave_type_id", "status": "$status"},
+                    "days": {"$sum": "$total_days"},
+                }
+            },
+        ]
+    ):
+        key = row["_id"]
+        taken[(str(key["user"]), str(key["type"]), key["status"])] = float(row["days"])
+
+    balances = {
+        (str(row["user_id"]), str(row["leave_type_id"])): row
+        async for row in _balances().find({"year": year})
+    }
+
+    rows = []
+    for document in users:
+        user = serialize(document)
+        types = []
+        for type_id, leave_type in leave_types.items():
+            used = taken.get((user["id"], type_id, ApprovalStatus.APPROVED.value), 0.0)
+            pending = taken.get((user["id"], type_id, ApprovalStatus.PENDING.value), 0.0)
+            balance = balances.get((user["id"], type_id))
+            if not leave_type.get("is_active", True) and not (used or pending):
+                continue
+            available = (
+                round(
+                    float(balance.get("allocated", 0))
+                    + float(balance.get("carried_forward", 0))
+                    - float(balance.get("used", 0))
+                    - float(balance.get("pending", 0)),
+                    2,
+                )
+                if balance
+                else None
+            )
+            types.append(
+                {
+                    "leave_type_id": type_id,
+                    "leave_type_name": leave_type["name"],
+                    "is_paid": leave_type.get("is_paid", True),
+                    "taken": round(used, 2),
+                    "pending": round(pending, 2),
+                    "available": available,
+                }
+            )
+        rows.append(
+            {
+                "user_id": user["id"],
+                "user_name": _display_name(user),
+                "paid_taken": round(sum(t["taken"] for t in types if t["is_paid"]), 2),
+                "unpaid_taken": round(sum(t["taken"] for t in types if not t["is_paid"]), 2),
+                "pending": round(sum(t["pending"] for t in types), 2),
+                "types": types,
+            }
+        )
+    return rows
 
 
 # --------------------------------------------------------------------------- #

@@ -40,8 +40,14 @@ async def _employee(admin_client, api_prefix, email="taker@example.com"):
     return authed_client(session["tokens"]["access_token"]), session
 
 
+# Saturdays follow the office pattern (2nd and 4th worked), so counts that
+# depend on today's date are pinned to one Monday-to-Friday week: _future(5)
+# is a Monday at least two weeks out.
+_MONDAY = org_today() + timedelta(days=14 + (7 - org_today().weekday()) % 7)
+
+
 def _future(days: int) -> str:
-    return date_key(org_today() + timedelta(days=days))
+    return date_key(_MONDAY + timedelta(days=days - 5))
 
 
 # --------------------------------------------------------------------------- #
@@ -78,6 +84,8 @@ async def test_weekends_and_holidays_do_not_cost_leave(admin_client, api_prefix)
 
     # Pick a fixed Monday-to-Sunday window well in the future.
     monday = org_today() + timedelta(days=(7 - org_today().weekday()) + 14)
+    while ((monday + timedelta(days=5)).day - 1) // 7 + 1 in (2, 4):
+        monday += timedelta(days=7)  # a worked Saturday would count
     sunday = monday + timedelta(days=6)
     await admin_client.post(
         f"{api_prefix}/holidays",
@@ -158,3 +166,41 @@ async def test_approving_moves_pending_into_used(admin_client, api_prefix):
     assert balance["pending"] == 0
     assert balance["used"] == 2
     assert balance["available"] == 10
+
+
+async def test_a_holiday_declared_later_gives_the_day_back(admin_client, api_prefix):
+    """And the admin calendar and summary see the request."""
+    leave_type = await _seed(admin_client, api_prefix)
+    client, session = await _employee(admin_client, api_prefix)
+    async with client:
+        applied = (
+            await client.post(
+                f"{api_prefix}/leave",
+                json={
+                    "leave_type_id": leave_type["id"],
+                    "from_date": _future(5),
+                    "to_date": _future(7),
+                    "reason": "Visiting family for a few days.",
+                },
+            )
+        ).json()["data"]
+    holiday_on = applied["days"][1]["date"]
+
+    added = await admin_client.post(
+        f"{api_prefix}/holidays", json={"date": holiday_on, "name": "Declared later"}
+    )
+    assert added.status_code == 201, added.text
+
+    calendar = (
+        await admin_client.get(
+            f"{api_prefix}/leave/calendar",
+            params={"from_date": _future(0), "to_date": _future(30)},
+        )
+    ).json()["data"]
+    request = next(item for item in calendar if item["id"] == applied["id"])
+    assert request["total_days"] == applied["total_days"] - 1
+    assert holiday_on not in [day["date"] for day in request["days"]]
+
+    summary = (await admin_client.get(f"{api_prefix}/leave/summary")).json()["data"]
+    row = next(item for item in summary if item["user_id"] == session["user"]["id"])
+    assert row["pending"] == applied["total_days"] - 1

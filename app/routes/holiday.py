@@ -12,6 +12,7 @@ from app.schemas.holiday import (
     HolidayUpdate,
 )
 from app.services import holiday as holiday_service
+from app.services import leave as leave_service
 from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser
 from app.utils.response import success
 
@@ -42,12 +43,18 @@ async def upcoming(_: CurrentUser, limit: int = Query(default=5, ge=1, le=20)) -
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Add a holiday")
 async def create_holiday(payload: HolidayCreate, _: CurrentAdmin, actor: CurrentActor) -> dict:
     created = await holiday_service.create_holiday(payload, actor)
-    return success(HolidayOut.from_document(created), message="Holiday added.")
+    message = "Holiday added."
+    if returned := await leave_service.give_back_days_off(payload.date, payload.date):
+        message += f" Leave on that day returned for {returned} request(s)."
+    return success(HolidayOut.from_document(created), message=message)
 
 
 @router.post("/bulk", summary="Add many holidays at once")
 async def bulk_create(payload: HolidayBulkCreate, _: CurrentAdmin, actor: CurrentActor) -> dict:
     result = await holiday_service.bulk_create(payload, actor)
+    if payload.holidays:
+        dates = [item.date for item in payload.holidays]
+        await leave_service.give_back_days_off(min(dates), max(dates))
     message = f"{result['created']} holiday(s) added."
     if result["skipped"]:
         message += f" {result['skipped']} skipped as duplicates."
@@ -59,6 +66,8 @@ async def update_holiday(
     holiday_id: str, payload: HolidayUpdate, _: CurrentAdmin, actor: CurrentActor
 ) -> dict:
     updated = await holiday_service.update_holiday(holiday_id, payload, actor)
+    moved_to = date.fromisoformat(updated["date"])
+    await leave_service.give_back_days_off(moved_to, moved_to)
     return success(HolidayOut.from_document(updated), message="Holiday updated.")
 
 

@@ -1,10 +1,12 @@
 """Leave endpoints: balances, applying, approving."""
 
+from datetime import date, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
 from app.core.datetime import org_today
+from app.core.exceptions import ValidationError
 from app.models.correction import ApprovalStatus
 from app.schemas.bulk import BulkDecision
 from app.schemas.common import PaginatedData
@@ -115,6 +117,21 @@ async def queue(
 @router.get("/pending-count", summary="How many requests are waiting")
 async def pending_count(approver: CurrentApprover) -> dict:
     return success({"pending": await leave_service.pending_count(approver)})
+
+
+@router.get("/calendar", summary="Pending and approved leave in a date range")
+async def calendar(approver: CurrentApprover, from_date: date, to_date: date) -> dict:
+    if to_date < from_date or to_date - from_date > timedelta(days=92):
+        raise ValidationError("Pick a range of up to three months.", code="RANGE_TOO_LONG")
+    items = await leave_service.requests_between(from_date, to_date, approver)
+    return success([LeaveRequestOut.from_document(item) for item in items])
+
+
+@router.get("/summary", summary="Leave taken this year, per employee")
+async def summary(
+    _: CurrentAdmin, year: int | None = Query(default=None, ge=2000, le=2100)
+) -> dict:
+    return success(await leave_service.year_summary(year or org_today().year))
 
 
 @router.get("/on-leave-today", summary="Who is away today")
