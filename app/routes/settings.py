@@ -31,6 +31,8 @@ async def update_settings(
     payload: OrgSettingsUpdate, _: CurrentAdmin, actor: CurrentActor
 ) -> dict:
     updated = await settings_service.update_settings(payload, actor)
+    if payload.model_fields_set & {"working_saturdays", "fifth_saturday_working"}:
+        await leave_service.match_upcoming_leave()  # a Saturday opened or closed
     return success(OrgSettingsOut.from_document(updated), message="Settings updated.")
 
 

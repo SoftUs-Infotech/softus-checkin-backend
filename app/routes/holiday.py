@@ -44,7 +44,7 @@ async def upcoming(_: CurrentUser, limit: int = Query(default=5, ge=1, le=20)) -
 async def create_holiday(payload: HolidayCreate, _: CurrentAdmin, actor: CurrentActor) -> dict:
     created = await holiday_service.create_holiday(payload, actor)
     message = "Holiday added."
-    if returned := await leave_service.give_back_days_off(payload.date, payload.date):
+    if returned := await leave_service.match_leave_to_calendar(payload.date, payload.date):
         message += f" Leave on that day returned for {returned} request(s)."
     return success(HolidayOut.from_document(created), message=message)
 
@@ -54,7 +54,7 @@ async def bulk_create(payload: HolidayBulkCreate, _: CurrentAdmin, actor: Curren
     result = await holiday_service.bulk_create(payload, actor)
     if payload.holidays:
         dates = [item.date for item in payload.holidays]
-        await leave_service.give_back_days_off(min(dates), max(dates))
+        await leave_service.match_leave_to_calendar(min(dates), max(dates))
     message = f"{result['created']} holiday(s) added."
     if result["skipped"]:
         message += f" {result['skipped']} skipped as duplicates."
@@ -65,13 +65,16 @@ async def bulk_create(payload: HolidayBulkCreate, _: CurrentAdmin, actor: Curren
 async def update_holiday(
     holiday_id: str, payload: HolidayUpdate, _: CurrentAdmin, actor: CurrentActor
 ) -> dict:
+    moved_from = date.fromisoformat((await holiday_service.require_holiday(holiday_id))["date"])
     updated = await holiday_service.update_holiday(holiday_id, payload, actor)
     moved_to = date.fromisoformat(updated["date"])
-    await leave_service.give_back_days_off(moved_to, moved_to)
+    await leave_service.match_leave_to_calendar(min(moved_from, moved_to), max(moved_from, moved_to))
     return success(HolidayOut.from_document(updated), message="Holiday updated.")
 
 
 @router.delete("/{holiday_id}", summary="Remove a holiday")
 async def delete_holiday(holiday_id: str, _: CurrentAdmin, actor: CurrentActor) -> dict:
+    day = date.fromisoformat((await holiday_service.require_holiday(holiday_id))["date"])
     await holiday_service.delete_holiday(holiday_id, actor)
+    await leave_service.match_leave_to_calendar(day, day)  # worked again, so leave again
     return success(message="Holiday removed.")

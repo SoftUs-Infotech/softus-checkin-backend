@@ -69,7 +69,7 @@ async def list_overrides(_: CurrentUser, from_date: date, to_date: date) -> dict
 )
 async def set_override(payload: OverrideCreate, _: CurrentAdmin, actor: CurrentActor) -> dict:
     result = await calendar_service.set_override(payload, actor)
-    await leave_service.give_back_days_off(payload.date, payload.date)  # a day closed is not leave
+    await leave_service.match_leave_to_calendar(payload.date, payload.date)
     message = "Calendar updated."
     if result["comp_offs_credited"]:
         message += f" {result['comp_offs_credited']} comp-off(s) credited."
@@ -85,6 +85,7 @@ async def set_override(payload: OverrideCreate, _: CurrentAdmin, actor: CurrentA
 @router.delete("/overrides/{on}", summary="Drop a per-date ruling")
 async def remove_override(on: date, _: CurrentAdmin, actor: CurrentActor) -> dict:
     await calendar_service.remove_override(on, actor)
+    await leave_service.match_leave_to_calendar(on, on)
     return success(message="Ruling removed.")
 
 
@@ -132,6 +133,8 @@ async def clear_full_day(on: date, _: CurrentAdmin, actor: CurrentActor) -> dict
 )
 async def create_swap(payload: SwapCreate, _: CurrentAdmin, actor: CurrentActor) -> dict:
     result = await calendar_service.create_swap(payload, actor)
+    for day in (payload.off_date, payload.working_date):
+        await leave_service.match_leave_to_calendar(day, day)
     message = f"{result['off_date']} swapped with {result['working_date']}."
     if result["comp_offs_credited"]:
         message += f" {result['comp_offs_credited']} comp-off(s) credited."
@@ -141,6 +144,9 @@ async def create_swap(payload: SwapCreate, _: CurrentAdmin, actor: CurrentActor)
 @router.delete("/swaps/{on}", summary="Undo a swap, both halves at once")
 async def remove_swap(on: date, _: CurrentAdmin, actor: CurrentActor) -> dict:
     result = await calendar_service.remove_swap(on, actor)
+    for key in result["removed"]:
+        day = date.fromisoformat(key)
+        await leave_service.match_leave_to_calendar(day, day)
     return success(result, message="Swap removed.")
 
 

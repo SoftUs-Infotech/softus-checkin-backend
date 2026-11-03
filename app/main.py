@@ -28,6 +28,14 @@ async def lifespan(_: FastAPI):
     )
     await connect_to_mongo()
     await create_indexes()
+    try:
+        # Leave booked under older rules (a holiday inside it, a worked
+        # Saturday left out) is matched to the work calendar. Idempotent.
+        from app.services.leave import match_upcoming_leave
+
+        await match_upcoming_leave()
+    except Exception:  # never stop the API from starting over this
+        logger.exception("Could not match leave to the work calendar at start-up.")
     start_scheduler()
     try:
         yield

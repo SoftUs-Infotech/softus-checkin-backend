@@ -204,3 +204,15 @@ async def test_a_holiday_declared_later_gives_the_day_back(admin_client, api_pre
     summary = (await admin_client.get(f"{api_prefix}/leave/summary")).json()["data"]
     row = next(item for item in summary if item["user_id"] == session["user"]["id"])
     assert row["pending"] == applied["total_days"] - 1
+
+    # Removing the holiday makes it a working day again, so it is leave again.
+    await admin_client.delete(f"{api_prefix}/holidays/{added.json()['data']['id']}")
+    calendar = (
+        await admin_client.get(
+            f"{api_prefix}/leave/calendar",
+            params={"from_date": _future(0), "to_date": _future(30)},
+        )
+    ).json()["data"]
+    request = next(item for item in calendar if item["id"] == applied["id"])
+    assert request["total_days"] == applied["total_days"]
+    assert holiday_on in [day["date"] for day in request["days"]]

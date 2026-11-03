@@ -586,20 +586,24 @@ async def resolve_leave_days(
     return days, total
 
 
-async def give_back_days_off(start: date, end: date) -> int:
-    """Return leave charged on days that have since stopped being working days.
+async def match_leave_to_calendar(start: date, end: date) -> int:
+    """Bring leave touching a date range back in line with the work calendar.
 
-    A holiday declared (or a day closed) after somebody booked leave across it
-    is no longer leave: the day leaves the request and its balance comes back.
-    A request left with no days is cancelled. Returns how many changed.
+    A leave covers the days the office expects the person in. When the
+    calendar changes after the leave was booked — a holiday declared, moved
+    or removed, a day closed or opened, a Saturday made working — the request
+    follows: a day that is now off leaves it and goes back to the balance, a
+    day that is now worked joins it (otherwise it would read as an absence
+    and cost a day's pay). A request left with no days is cancelled.
+    Returns how many requests changed.
     """
-    keys = [date_key(day) for day in iter_dates(start, end)]
     tracking_from = await settings_service.tracking_start()
     requests = await _requests().find(
         {
             "is_deleted": False,
             "status": {"$in": [ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]},
-            "days.date": {"$in": keys},
+            "from_date": {"$lte": date_key(end)},
+            "to_date": {"$gte": date_key(start)},
         }
     ).to_list(length=None)
 
@@ -608,31 +612,46 @@ async def give_back_days_off(start: date, end: date) -> int:
         user = serialize(await _users().find_one({"_id": ObjectId(request["user_id"])})) or {
             "id": request["user_id"]
         }
-        working = {
-            date_key(decision.day): decision.is_working
-            for decision in await work_calendar_service.decisions_for_range(start, end, user=user)
-        }
-        kept = [day for day in request["days"] if working.get(day["date"], True)]
-        if len(kept) == len(request["days"]):
+        parts = {day["date"]: day["day_part"] for day in request.get("days", [])}
+        # A day joining the request is taken the way the rest of it was.
+        default = next(iter(set(parts.values()))) if len(set(parts.values())) == 1 else DayPart.FULL.value
+        decisions = await work_calendar_service.decisions_for_range(
+            date.fromisoformat(request["from_date"]), date.fromisoformat(request["to_date"]), user=user
+        )
+        days = [
+            {"date": date_key(decision.day), "day_part": parts.get(date_key(decision.day), default)}
+            for decision in decisions
+            if decision.is_working
+        ]
+        if days == request.get("days", []):
             continue
 
-        total = round(sum(DAY_PART_VALUE[day["day_part"]] for day in kept), 2)
-        freed = round(float(request["total_days"]) - total, 2)
-        update: dict[str, Any] = {"days": kept, "total_days": total, "updated_at": utc_now()}
-        if not kept:
+        total = round(sum(DAY_PART_VALUE[day["day_part"]] for day in days), 2)
+        delta = round(total - float(request["total_days"]), 2)
+        update: dict[str, Any] = {"days": days, "total_days": total, "updated_at": utc_now()}
+        if not days:
             update["status"] = ApprovalStatus.CANCELLED.value
         await _requests().update_one({"_id": request["_id"]}, {"$set": update})
 
-        if _counts(request, tracking_from):
+        if delta and _counts(request, tracking_from):
             field = "pending" if request["status"] == ApprovalStatus.PENDING.value else "used"
             await _move_balance(
                 request["user_id"],
                 request["leave_type_id"],
                 int(request["from_date"][:4]),
-                **{field: -freed},
+                **{field: delta},
             )
         changed += 1
+    if changed:
+        logger.info("Leave matched to the work calendar: %d request(s) changed.", changed)
     return changed
+
+
+async def match_upcoming_leave() -> int:
+    """Match every leave from the start of this month on — after a change to the
+    Saturday pattern, and once at start-up for requests booked under older rules."""
+    today = org_today()
+    return await match_leave_to_calendar(today.replace(day=1), today + timedelta(days=366))
 
 
 async def requests_between(
