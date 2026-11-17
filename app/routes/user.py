@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from app.models.user import UserRole, UserStatus
+from app.models.user import UserRole, UserStatus, WorkMode
 from app.schemas.common import PaginatedData
 from app.schemas.user import UserAdminUpdate, UserListFilters, UserOut
 from app.services import user as user_service
@@ -22,9 +22,14 @@ async def list_users(
     role: UserRole | None = None,
     user_status: Annotated[UserStatus | None, Query(alias="status")] = None,
     department: str | None = None,
+    work_mode: WorkMode | None = None,
 ) -> dict:
     filters = UserListFilters(
-        search=search, role=role, status=user_status, department=department
+        search=search,
+        role=role,
+        status=user_status,
+        department=department,
+        work_mode=work_mode,
     )
     items, total = await user_service.list_users(filters, pagination)
     page = PaginatedData.build(

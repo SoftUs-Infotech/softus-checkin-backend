@@ -20,7 +20,7 @@ from app.db.mongo import Collections, get_collection
 from app.models.audit_log import AuditAction, AuditEntity
 from app.models.base import encode_for_mongo, serialize
 from app.models.invite import InviteStatus
-from app.models.user import UserRole, UserStatus
+from app.models.user import UserRole, UserStatus, WorkMode
 from app.schemas.common import PaginationParams
 from app.schemas.user import UserListFilters
 from app.services import audit
@@ -66,6 +66,12 @@ async def list_users(
         query["status"] = filters.status.value
     if filters.department:
         query["department"] = filters.department
+    if filters.work_mode:
+        # Accounts created before the field existed have none, and they work
+        # from the office — so "office" is "anything but home".
+        query["work_mode"] = (
+            WorkMode.WFH.value if filters.work_mode == WorkMode.WFH else {"$ne": WorkMode.WFH.value}
+        )
     if filters.search:
         pattern = re.escape(filters.search.strip())
         query["$or"] = [

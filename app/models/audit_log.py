@@ -40,6 +40,7 @@ class AuditEntity(StrEnum):
     WORK_CALENDAR = "WORK_CALENDAR"
     COMP_OFF = "COMP_OFF"
     SALARY = "SALARY"
+    SCREENSHOT = "SCREENSHOT"
     SETTINGS = "SETTINGS"
 
 

@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models.user import EmploymentType, UserRole, UserStatus, may_punch
+from app.models.user import EmploymentType, UserRole, UserStatus, WorkMode, may_punch
 
 
 class UserProfileUpdate(BaseModel):
@@ -29,6 +29,8 @@ class UserAdminUpdate(UserProfileUpdate):
     role: UserRole | None = None
     # Not on the employee's own profile form: it decides how they are paid.
     employment_type: EmploymentType | None = None
+    # Work from home turns on screen capture for this person.
+    work_mode: WorkMode | None = None
 
     # A shift is assigned for a stretch of work, so it carries a window. Both
     # dates absent means the assignment simply runs until it is changed.
@@ -57,6 +59,7 @@ class UserOut(BaseModel):
     designation: str | None = None
     department: str | None = None
     employment_type: EmploymentType = EmploymentType.FULL_TIME
+    work_mode: WorkMode = WorkMode.OFFICE
     role: UserRole
     status: UserStatus
     shift_id: str | None = None
@@ -86,3 +89,4 @@ class UserListFilters(BaseModel):
     role: UserRole | None = None
     status: UserStatus | None = None
     department: str | None = None
+    work_mode: WorkMode | None = None

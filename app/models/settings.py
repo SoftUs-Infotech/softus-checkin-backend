@@ -70,6 +70,10 @@ class OrgSettings(MongoModel):
     working_saturdays: list[int] = Field(default_factory=lambda: [2, 4])
     fifth_saturday_working: bool | None = None
 
+    # Work from home: one screenshot at a random moment in every window of
+    # this many minutes while the employee is punched in.
+    wfh_screenshot_interval_minutes: int = Field(default=10, ge=5, le=60)
+
     # Comp-off earned when a worked day is later swapped off.
     comp_off_expiry_days: int = Field(default=90, ge=0, le=730)
 

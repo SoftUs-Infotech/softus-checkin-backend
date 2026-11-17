@@ -20,6 +20,7 @@ from app.core.datetime import (
     iter_dates,
     month_range,
     org_today,
+    to_org_tz,
     to_utc,
     utc_now,
 )
@@ -42,6 +43,7 @@ from app.models.attendance import (
 )
 from app.models.audit_log import AuditAction, AuditEntity
 from app.models.base import serialize
+from app.models.user import UserStatus, WorkMode, works_from_home
 from app.models.user import may_punch as user_may_punch
 from app.schemas.attendance import (
     AttendanceAdjust,
@@ -59,6 +61,7 @@ from app.services import audit
 from app.services import geocode as geocode_service
 from app.services import holiday as holiday_service
 from app.services import notification as notification_service
+from app.services import screenshot as screenshot_service
 from app.services import settings as settings_service
 from app.services import shift as shift_service
 from app.services import work_calendar as work_calendar_service
@@ -66,6 +69,10 @@ from app.services.attendance_rules import compute_day_status, employment_start, 
 from app.services.audit import Actor
 
 logger = get_logger(__name__)
+
+
+#: Why the system, rather than the employee, ended a session.
+SCREEN_SHARE_STOPPED = "SCREEN_SHARE_STOPPED"
 
 
 def _attendance():
@@ -212,6 +219,38 @@ async def recompute_everyone_on(day: date) -> int:
     return len(user_ids)
 
 
+def _breaks_between(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each gap from a punch-out to the next punch-in.
+
+    A gap after the system ended a session because screen sharing stopped is
+    marked as such: the employee did not choose to step away, and an
+    administrator reading the day should not mistake it for lunch.
+    """
+    timed = sorted(
+        (session for session in sessions if (session.get("punch_in") or {}).get("at")),
+        key=lambda session: to_utc(session["punch_in"]["at"]),
+    )
+    gaps = []
+    for earlier, later in zip(timed, timed[1:], strict=False):
+        out = (earlier.get("punch_out") or {}).get("at")
+        if out is None:
+            continue
+        start, end = to_utc(out), to_utc(later["punch_in"]["at"])
+        if end <= start:
+            continue
+        gaps.append(
+            {
+                "start": start,
+                "end": end,
+                "minutes": int((end - start).total_seconds() // 60),
+                "kind": SCREEN_SHARE_STOPPED
+                if earlier.get("closed_reason") == SCREEN_SHARE_STOPPED
+                else "BREAK",
+            }
+        )
+    return gaps
+
+
 def to_day_out(record: dict[str, Any]) -> AttendanceDayOut:
     """Present a computed day for the API."""
     sessions = []
@@ -228,9 +267,12 @@ def to_day_out(record: dict[str, Any]) -> AttendanceDayOut:
                 "punch_in": punch_in,
                 "punch_out": punch_out,
                 "auto_closed": session.get("auto_closed", False),
+                "closed_reason": session.get("closed_reason"),
                 "duration_minutes": max(0, duration),
             }
         )
+
+    breaks = _breaks_between(sessions)
 
     status = record.get("status", AttendanceStatus.NOT_STARTED.value)
     holiday = record.get("holiday") or {}
@@ -251,6 +293,11 @@ def to_day_out(record: dict[str, Any]) -> AttendanceDayOut:
         first_punch_in=record.get("first_punch_in"),
         last_punch_out=record.get("last_punch_out"),
         sessions=sessions,
+        breaks=breaks,
+        break_minutes=sum(gap["minutes"] for gap in breaks if gap["kind"] == "BREAK"),
+        unshared_minutes=sum(
+            gap["minutes"] for gap in breaks if gap["kind"] == SCREEN_SHARE_STOPPED
+        ),
         holiday_name=holiday.get("name"),
         leave_type=leave.get("leave_type_name"),
         leave_day_part=leave.get("day_part"),
@@ -407,6 +454,8 @@ async def punch_in(
         return await recompute_day(user["id"], day, user=user)
 
     _require_punch_permission(user)
+    # Working from home: the screen has to be shared before the day starts.
+    await screenshot_service.require_recent_capture(user)
     await _require_location(payload)
 
     shift = await shift_for_user(user)
@@ -423,13 +472,16 @@ async def punch_in(
 
     org_settings = await settings_service.get_settings()
     sessions = _session_dicts(document)
-    if sessions and not org_settings.get("allow_multiple_sessions", True):
+    # Punched out by the system because screen sharing stopped: carrying on is
+    # the point, so neither the one-session rule nor the double-tap gap applies.
+    resuming = bool(sessions) and sessions[-1].get("closed_reason") == SCREEN_SHARE_STOPPED
+    if sessions and not resuming and not org_settings.get("allow_multiple_sessions", True):
         raise ConflictError(
             "Only one punch-in per day is allowed.", code="MULTIPLE_SESSIONS_DISABLED"
         )
 
     gap = int(org_settings.get("min_punch_gap_seconds", 60))
-    if sessions and gap:
+    if sessions and gap and not resuming:
         last_out = sessions[-1].get("punch_out") or {}
         if last_out.get("at") and (now - to_utc(last_out["at"])).total_seconds() < gap:
             raise ConflictError(
@@ -588,6 +640,12 @@ async def get_today(user: dict[str, Any], *, device_class: str = "UNKNOWN") -> d
         "device_class": device_class,
         "geolocation_required": org_settings.get("geolocation_required", True),
         "elapsed_minutes": max(0, elapsed),
+        # Working from home: punching in needs the screen shared, and while
+        # punched in a screenshot is kept at a random moment in every interval.
+        "screen_capture_required": works_from_home(user),
+        "screen_capture_interval_minutes": int(
+            org_settings.get("wfh_screenshot_interval_minutes") or 10
+        ),
     }
 
 
@@ -1081,6 +1139,139 @@ async def adjust_day(
 # --------------------------------------------------------------------------- #
 # scheduled maintenance
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# working from home: the session lasts as long as the shared screen
+# --------------------------------------------------------------------------- #
+async def end_session_for_capture_loss(
+    user: dict[str, Any], *, at: datetime, notify: bool = False
+) -> dict[str, Any] | None:
+    """Punch somebody working from home out because their screen stopped being shared.
+
+    ``at`` is when sharing stopped — now, when the browser says so; the last
+    sign of life, when the server notices the silence — so the time after it is
+    not counted as worked. Returns the recomputed day, or None when nothing was
+    open.
+    """
+    today = attendance_date(utc_now())
+    documents = await _attendance().find(
+        {
+            "user_id": user["id"],
+            # Yesterday too: a session can run past midnight.
+            "date": {"$in": [date_key(today), date_key(today - timedelta(days=1))]},
+            "sessions": {"$elemMatch": {"punch_out": None, "auto_closed": {"$ne": True}}},
+        }
+    ).to_list(length=2)
+    if not documents:
+        return None
+    document = max(documents, key=lambda item: item["date"])
+
+    index = next(
+        i
+        for i, session in enumerate(_session_dicts(document))
+        if session.get("punch_out") is None and not session.get("auto_closed")
+    )
+    started = to_utc(_session_dicts(document)[index]["punch_in"]["at"])
+    ended = max(to_utc(at), started)
+    event = {
+        "at": ended,
+        "latitude": None,
+        "longitude": None,
+        "accuracy_metres": None,
+        "address": None,
+        "city": None,
+        "ip": None,
+        "user_agent": None,
+        "device_class": None,
+        "platform": None,
+        "source": PunchSource.SYSTEM.value,
+        "note": "Screen sharing stopped",
+    }
+    result = await _attendance().update_one(
+        # Only if still open: the browser's report and the server's own check
+        # can arrive together, and the session must be ended once.
+        {"_id": document["_id"], f"sessions.{index}.punch_out": None},
+        {
+            "$set": {
+                f"sessions.{index}.punch_out": event,
+                f"sessions.{index}.closed_reason": SCREEN_SHARE_STOPPED,
+                "updated_at": utc_now(),
+            }
+        },
+    )
+    day = date.fromisoformat(document["date"])
+    if result.modified_count == 0:
+        return await recompute_day(user["id"], day, user=user)
+
+    logger.info("%s punched out at %s: screen sharing stopped", user["email"], ended.isoformat())
+    if notify:
+        # The browser could not say so itself — a closed tab, a sleeping
+        # laptop — so they may not have seen it happen. It says only *that* they
+        # were punched out: the reason is for the administrator, on their day.
+        await notification_service.notify(
+            user["id"],
+            type=NotificationType.ATTENDANCE_ADJUSTED,
+            title="You were punched out",
+            body=f"You were punched out at {to_org_tz(ended):%H:%M}. Please punch in again.",
+            link="/",
+        )
+    return await recompute_day(user["id"], day, user=user)
+
+
+async def close_unshared_sessions(*, now: datetime | None = None) -> int:
+    """End the sessions of people working from home whose screen went quiet.
+
+    The browser reports a stop itself whenever it can. This is for when it
+    cannot: nothing heard for ``CAPTURE_TIMEOUT_SECONDS`` and the session ends
+    at the last moment the screen was known to be shared.
+    """
+    now = now or utc_now()
+    cutoff = now - timedelta(seconds=screenshot_service.CAPTURE_TIMEOUT_SECONDS)
+
+    people = {
+        str(user["_id"]): serialize(user)
+        async for user in _users().find(
+            {
+                "is_deleted": False,
+                "status": UserStatus.ACTIVE.value,
+                "work_mode": WorkMode.WFH.value,
+            }
+        )
+    }
+    if not people:
+        return 0
+
+    today = attendance_date(now)
+    documents = await _attendance().find(
+        {
+            "user_id": {"$in": list(people)},
+            "date": {"$in": [date_key(today), date_key(today - timedelta(days=1))]},
+            "sessions": {"$elemMatch": {"punch_out": None, "auto_closed": {"$ne": True}}},
+        }
+    ).to_list(length=None)
+    seen = await screenshot_service.last_seen_map(list(people))
+
+    closed = 0
+    for document in documents:
+        open_session = next(
+            session
+            for session in _session_dicts(document)
+            if session.get("punch_out") is None and not session.get("auto_closed")
+        )
+        started = to_utc(open_session["punch_in"]["at"])
+        last_seen = max(seen.get(document["user_id"], started), started)
+        if last_seen >= cutoff:
+            continue
+        ended = await end_session_for_capture_loss(
+            people[document["user_id"]], at=last_seen, notify=True
+        )
+        if ended is not None:
+            closed += 1
+
+    if closed:
+        logger.info("Ended %d work-from-home session(s) whose screen stopped being shared.", closed)
+    return closed
+
+
 async def close_stale_sessions(*, now: datetime | None = None) -> int:
     """Mark yesterday-and-earlier open sessions as forgotten punch-outs.
 

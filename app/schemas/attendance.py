@@ -56,7 +56,22 @@ class SessionOut(BaseModel):
     punch_in: PunchEventOut
     punch_out: PunchEventOut | None = None
     auto_closed: bool = False
+    #: Set when the system ended the session — ``SCREEN_SHARE_STOPPED`` for
+    #: somebody working from home whose screen stopped being shared.
+    closed_reason: str | None = None
     duration_minutes: int = 0
+
+
+class BreakOut(BaseModel):
+    """The time between one punch-out and the next punch-in on the same day."""
+
+    start: datetime
+    end: datetime
+    minutes: int
+    #: ``BREAK`` when the employee punched out themselves; ``SCREEN_SHARE_STOPPED``
+    #: when the system punched somebody working from home out because their
+    #: screen stopped being shared — time away, but not a break they chose.
+    kind: str = "BREAK"
 
 
 class AttendanceDayOut(BaseModel):
@@ -79,6 +94,10 @@ class AttendanceDayOut(BaseModel):
     first_punch_in: datetime | None = None
     last_punch_out: datetime | None = None
     sessions: list[SessionOut] = Field(default_factory=list)
+    #: Gaps between sessions, in order, and their totals by kind.
+    breaks: list[BreakOut] = Field(default_factory=list)
+    break_minutes: int = 0
+    unshared_minutes: int = 0
 
     holiday_name: str | None = None
     leave_type: str | None = None
@@ -136,6 +155,9 @@ class TodayOut(BaseModel):
     device_class: str = "UNKNOWN"
     geolocation_required: bool = True
     elapsed_minutes: int = 0
+    #: Works from home: punching in needs the screen shared first.
+    screen_capture_required: bool = False
+    screen_capture_interval_minutes: int = 10
 
 
 class AdminSessionInput(BaseModel):

@@ -41,6 +41,8 @@ class Collections:
     SALARIES = "salaries"
     SALARY_ADJUSTMENTS = "salary_adjustments"
     GEOCODE_CACHE = "geocode_cache"
+    SCREENSHOTS = "screenshots"
+    CAPTURE_HEARTBEATS = "capture_heartbeats"
 
 
 class _MongoState:

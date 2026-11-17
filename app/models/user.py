@@ -29,6 +29,22 @@ class EmploymentType(StrEnum):
     PART_TIME = "PART_TIME"
 
 
+class WorkMode(StrEnum):
+    """Where somebody works from.
+
+    ``WFH`` turns on screen capture: they share their screen to punch in, and a
+    screenshot is kept at a random moment in every few minutes they are punched
+    in, for an administrator to review and then delete.
+    """
+
+    OFFICE = "OFFICE"
+    WFH = "WFH"
+
+
+def works_from_home(document: dict[str, Any]) -> bool:
+    return document.get("work_mode") == WorkMode.WFH
+
+
 class UserStatus(StrEnum):
     INVITED = "INVITED"
     ACTIVE = "ACTIVE"
@@ -97,6 +113,7 @@ class User(MongoModel):
     designation: str | None = None
     department: str | None = None
     employment_type: EmploymentType = EmploymentType.FULL_TIME
+    work_mode: WorkMode = WorkMode.OFFICE
 
     role: UserRole = UserRole.EMPLOYEE
     status: UserStatus = UserStatus.INVITED

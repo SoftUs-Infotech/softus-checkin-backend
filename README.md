@@ -277,6 +277,56 @@ appears on every following day until it closes, so one task keeps one history an
 `days_open` means what it says. Anything open longer than a fortnight is flagged
 as stale.
 
+### Work from home and screenshots
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| POST | `/screenshots` | employee working from home | Upload one frame of the shared screen (multipart `file`) |
+| POST | `/screenshots/heartbeat` | employee working from home | "The screen is still shared" — every 30 seconds while punched in |
+| POST | `/screenshots/stopped` | employee working from home | Sharing stopped: punch out now |
+| GET | `/screenshots/summary` | admin | Everyone working from home, plus anyone with screenshots still stored |
+| GET | `/screenshots` | admin | One person's screenshots for a day (`user_id`, `date`), with short-lived links |
+| GET | `/screenshots/days` | admin | The days one person has screenshots on |
+| POST | `/screenshots/delete` | admin | Delete `ids`, a `user_id` and/or `date`, or `everything` |
+| GET | `/files` | signed link | A locally stored file (`STORAGE_PROVIDER=local` only) |
+
+**Mode of work is per person.** `work_mode` is `OFFICE` (the default, and what
+every older account reads as) or `WFH`, set by an administrator on the employee.
+
+**Working from home means sharing the screen.** A browser cannot capture a
+screen silently, so the employee shares it once after pressing punch in, and
+the browser shows that it is being shared. While they are punched in the page
+keeps one frame at a random moment in every
+`wfh_screenshot_interval_minutes` (an org setting, default 10). Punch-in is
+refused with `403 SCREEN_CAPTURE_REQUIRED` unless the server itself received a
+screenshot from them in the last three minutes — checked against what arrived,
+not a flag the browser sends.
+
+**The session lasts as long as the sharing.** Stopping sharing while punched
+in punches the employee out: the browser reports it at once when they press its
+"Stop sharing", or reload or close the page. When it cannot — a crash, a
+sleeping laptop, a dropped connection — the server notices instead: a job runs
+every minute, and a work-from-home session with no heartbeat or screenshot for
+three minutes is ended at the last moment the screen was known to be shared, so
+the silent time is not counted. The session is marked
+`closed_reason: SCREEN_SHARE_STOPPED`. The employee is told only that they were
+punched out and asked to punch in again — the popup and the notification never
+give the reason, which is for the administrator, on the employee's day. Coming back that way skips
+the gap-between-punches and one-session-a-day rules — being punched out was not
+their choice.
+
+**Deleting frees the space.** A deletion removes the file from storage first and
+its record only once the file is gone, so a failed delete can be retried. Every
+deletion is in the audit trail. Images are never public: S3 objects are reached
+through presigned URLs, local files through links signed with `SECRET_KEY`;
+both expire after `SCREENSHOT_URL_EXPIRE_MINUTES`.
+
+**Storage is a setting.** `STORAGE_PROVIDER=local` keeps files under
+`LOCAL_STORAGE_DIR` — right for development, wrong for a container that gets
+rebuilt. `STORAGE_PROVIDER=s3` with `S3_BUCKET` and `S3_REGION` uses a private
+bucket; on EC2 leave the AWS keys empty and give the instance an IAM role with
+`s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on `<bucket>/screenshots/*`.
+
 ### Security behaviour worth knowing
 
 - **Refresh rotation with reuse detection.** Each refresh issues a new token and
