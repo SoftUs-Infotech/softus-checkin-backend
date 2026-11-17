@@ -169,6 +169,18 @@ INDEXES: dict[str, list[IndexModel]] = {
             name="notification_inbox",
         ),
     ],
+    Collections.SCREENSHOTS: [
+        # One person's gallery for a day, newest first — the admin page's read —
+        # and "has this person sent one in the last few minutes", the punch-in gate.
+        IndexModel(
+            [("user_id", ASCENDING), ("date", ASCENDING), ("captured_at", DESCENDING)],
+            name="screenshot_user_day",
+        ),
+        IndexModel(
+            [("user_id", ASCENDING), ("captured_at", DESCENDING)], name="screenshot_user_recent"
+        ),
+        IndexModel([("date", ASCENDING)], name="screenshot_day"),
+    ],
     Collections.AUDIT_LOGS: [
         IndexModel([("at", DESCENDING)], name="audit_recent"),
         IndexModel([("entity", ASCENDING), ("entity_id", ASCENDING)], name="audit_entity"),

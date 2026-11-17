@@ -100,6 +100,24 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_TLS: bool = True
 
+    # --- file storage (work-from-home screenshots) ---
+    # local = files under LOCAL_STORAGE_DIR, served through short-lived signed
+    # links (development). s3 = an S3 bucket, served through presigned URLs.
+    STORAGE_PROVIDER: str = "local"
+    LOCAL_STORAGE_DIR: str = "uploads"
+    S3_BUCKET: str = ""
+    S3_REGION: str = ""
+    # Optional: an S3-compatible service (MinIO, Cloudflare R2). Empty is AWS.
+    S3_ENDPOINT_URL: str = ""
+    # Optional: without them boto3 uses its usual chain — on EC2, the
+    # instance's IAM role, which keeps long-lived keys off the server.
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    # How long a link to one screenshot works. The admin page re-fetches links
+    # as it is used, so this only has to outlast one look at the gallery.
+    SCREENSHOT_URL_EXPIRE_MINUTES: int = 15
+    SCREENSHOT_MAX_BYTES: int = 4_000_000
+
     LOG_DIR: str = Field(default="logs")
 
     @field_validator("SECRET_KEY")
@@ -131,6 +149,20 @@ class Settings(BaseSettings):
         if normalised not in allowed:
             raise ValueError(f"EMAIL_PROVIDER must be one of {sorted(allowed)}.")
         return normalised
+
+    @field_validator("STORAGE_PROVIDER")
+    @classmethod
+    def _known_storage_provider(cls, value: str) -> str:
+        normalised = value.strip().lower()
+        if normalised not in {"local", "s3"}:
+            raise ValueError("STORAGE_PROVIDER must be 'local' or 's3'.")
+        return normalised
+
+    @model_validator(mode="after")
+    def _s3_needs_a_bucket(self) -> "Settings":
+        if self.STORAGE_PROVIDER == "s3" and not self.S3_BUCKET.strip():
+            raise ValueError("STORAGE_PROVIDER=s3 needs S3_BUCKET.")
+        return self
 
     @field_validator("ENVIRONMENT")
     @classmethod

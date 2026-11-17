@@ -10,11 +10,13 @@ from app.routes import (
     attendance,
     auth,
     correction,
+    files,
     health,
     holiday,
     leave,
     leave_type,
     salary,
+    screenshot,
     settings,
     shift,
     task,
@@ -38,3 +40,5 @@ api_router.include_router(leave_type.router)
 api_router.include_router(work_calendar.router)
 api_router.include_router(salary.router)
 api_router.include_router(settings.router)
+api_router.include_router(screenshot.router)
+api_router.include_router(files.router)

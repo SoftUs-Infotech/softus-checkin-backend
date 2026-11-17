@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.models.user import EmploymentType, UserRole
+from app.models.user import EmploymentType, UserRole, WorkMode
 from app.schemas.user import UserOut
 
 PASSWORD_MIN_LENGTH = 8
@@ -46,6 +46,7 @@ class InviteCreate(BaseModel):
     designation: str | None = Field(default=None, max_length=100)
     department: str | None = Field(default=None, max_length=100)
     employment_type: EmploymentType = EmploymentType.FULL_TIME
+    work_mode: WorkMode = WorkMode.OFFICE
     employee_code: str | None = Field(default=None, max_length=40)
     shift_id: str | None = None
     reporting_manager_id: str | None = None

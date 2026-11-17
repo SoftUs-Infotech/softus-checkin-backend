@@ -34,6 +34,15 @@ async def _close_stale_sessions_job() -> None:
         logger.exception("The stale-session job failed.")
 
 
+async def _close_unshared_sessions_job() -> None:
+    from app.services.attendance import close_unshared_sessions
+
+    try:
+        await close_unshared_sessions()
+    except Exception:  # noqa: BLE001 - a failed job must not kill the scheduler
+        logger.exception("The work-from-home screen-sharing job failed.")
+
+
 async def _leave_accrual_job() -> None:
     from app.services.leave import run_accruals
 
@@ -66,6 +75,16 @@ def start_scheduler() -> None:
         _close_stale_sessions_job,
         CronTrigger(minute=5),  # five past every hour
         id="close_stale_sessions",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _close_unshared_sessions_job,
+        # Every minute: somebody working from home whose screen stopped being
+        # shared without the browser saying so is punched out within minutes.
+        CronTrigger(minute="*"),
+        id="close_unshared_sessions",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
