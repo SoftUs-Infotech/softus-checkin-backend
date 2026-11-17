@@ -13,8 +13,8 @@ Every screen built since should have something to show. Pay is on record for all
 but one employee, so the "no salary set" warning appears; the current month has a
 Saturday swap and a day closed by hand, with the comp-offs those credit; tasks
 sit at every stage of progress, including one left open long enough to read as
-carried forward and stale; and the admin cannot punch while one employee works
-from home, so both halves of the access split are visible.
+carried forward and stale; and the admin cannot punch, so the admin and
+employee halves of the application differ.
 
 Not for production. The accounts below have published passwords.
 """
@@ -63,7 +63,6 @@ from app.services import salary as salary_service  # noqa: E402
 from app.services import settings as settings_service  # noqa: E402
 from app.services import shift as shift_service  # noqa: E402
 from app.services import task as task_service  # noqa: E402
-from app.services import user as user_service  # noqa: E402
 from app.services import work_calendar as calendar_service  # noqa: E402
 from app.services.audit import SYSTEM, Actor  # noqa: E402
 
@@ -377,20 +376,6 @@ async def ensure_salaries(admin: dict, people: list[dict]) -> None:
         print(f"  {person['email']:<22} INR {history[-1][1]:,} a month{note}")
 
 
-async def mark_work_from_home(admin: dict, person: dict) -> None:
-    """One employee exempt from the office-network gate, for a fixed spell."""
-    today = org_today()
-    await user_service.update_user(
-        person["id"],
-        {
-            "wfh_enabled": True,
-            "wfh_from": today - timedelta(days=7),
-            "wfh_to": today + timedelta(days=21),
-        },
-        Actor.from_user(admin, "127.0.0.1"),
-    )
-    print(f"  home working : {person['email']} until {date_key(today + timedelta(days=21))}")
-
 
 async def shape_work_calendar(admin: dict, people: list[dict]) -> None:
     """A Saturday swap and a day closed by hand, plus the comp-offs they credit."""
@@ -669,9 +654,8 @@ async def run(args: argparse.Namespace) -> int:
 
         print("\nWho may punch")
         # The administrator was created with punching off, which is the default
-        # for the role; giving one employee work-from-home shows the other gate.
+        # for the role, so the admin and employee halves of the app differ.
         print(f"  {ADMIN['email']:<22} administrator, punching off (the default)")
-        await mark_work_from_home(admin, people[2])
 
         print("\nActivity")
         await seed_activity(admin, people)
