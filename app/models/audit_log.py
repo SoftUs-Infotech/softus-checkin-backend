@@ -25,6 +25,7 @@ class AuditAction(StrEnum):
     APPROVE = "APPROVE"
     REJECT = "REJECT"
     ADJUST = "ADJUST"
+    PUBLISH = "PUBLISH"
 
 
 class AuditEntity(StrEnum):
@@ -41,6 +42,7 @@ class AuditEntity(StrEnum):
     COMP_OFF = "COMP_OFF"
     SALARY = "SALARY"
     SCREENSHOT = "SCREENSHOT"
+    APP_RELEASE = "APP_RELEASE"
     SETTINGS = "SETTINGS"
 
 

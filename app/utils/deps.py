@@ -14,13 +14,16 @@ from app.core.exceptions import AuthenticationError, PermissionDeniedError
 from app.core.security import decode_token
 from app.models.user import UserRole, UserStatus
 from app.schemas.common import PaginationParams
+from app.services import app_client
 from app.services import user as user_service
 from app.services.audit import Actor
+from app.utils.client import read_client
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> dict[str, Any]:
     if credentials is None or not credentials.credentials:
@@ -41,6 +44,9 @@ async def get_current_user(
             "Finish setting up your account using the link in your invitation email.",
             code="ACCOUNT_NOT_ACTIVATED",
         )
+    # Which app (and which version of the desktop app) this person is using —
+    # what the admin sees on the Employees page.
+    await app_client.note(account, read_client(request))
     return account
 
 

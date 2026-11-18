@@ -181,6 +181,26 @@ INDEXES: dict[str, list[IndexModel]] = {
         ),
         IndexModel([("date", ASCENDING)], name="screenshot_day"),
     ],
+    Collections.ACTIVITY: [
+        # One row per person per minute; a resent minute replaces itself.
+        IndexModel(
+            [("user_id", ASCENDING), ("minute", ASCENDING)],
+            name="activity_user_minute",
+            unique=True,
+        ),
+        IndexModel([("user_id", ASCENDING), ("date", ASCENDING)], name="activity_user_day"),
+    ],
+    Collections.APP_RELEASES: [
+        IndexModel(
+            [("platform", ASCENDING), ("version", ASCENDING)],
+            name="release_platform_version",
+            unique=True,
+        ),
+        IndexModel(
+            [("platform", ASCENDING), ("status", ASCENDING), ("published_at", DESCENDING)],
+            name="release_published",
+        ),
+    ],
     Collections.AUDIT_LOGS: [
         IndexModel([("at", DESCENDING)], name="audit_recent"),
         IndexModel([("entity", ASCENDING), ("entity_id", ASCENDING)], name="audit_entity"),

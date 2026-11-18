@@ -34,6 +34,7 @@ class OrgSettingsUpdate(BaseModel):
     comp_off_expiry_days: int | None = Field(default=None, ge=0, le=730)
 
     wfh_screenshot_interval_minutes: int | None = Field(default=None, ge=5, le=60)
+    wfh_desktop_app_required: bool | None = None
 
     support_email: str | None = Field(default=None, max_length=120)
 
@@ -67,6 +68,7 @@ class OrgSettingsOut(BaseModel):
     comp_off_expiry_days: int = 90
 
     wfh_screenshot_interval_minutes: int = 10
+    wfh_desktop_app_required: bool = False
 
     support_email: str | None = None
     tracking_starts_on: str | None = None

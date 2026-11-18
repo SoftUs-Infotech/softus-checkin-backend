@@ -158,6 +158,8 @@ class TodayOut(BaseModel):
     #: Works from home: punching in needs the screen shared first.
     screen_capture_required: bool = False
     screen_capture_interval_minutes: int = 10
+    #: Works from home and the organisation requires the desktop app to punch.
+    desktop_app_required: bool = False
 
 
 class AdminSessionInput(BaseModel):

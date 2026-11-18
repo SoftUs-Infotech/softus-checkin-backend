@@ -73,6 +73,10 @@ class OrgSettings(MongoModel):
     # Work from home: one screenshot at a random moment in every window of
     # this many minutes while the employee is punched in.
     wfh_screenshot_interval_minutes: int = Field(default=10, ge=5, le=60)
+    # Work from home: punch in only from the desktop app (which tracks
+    # activity). Off until the app has been handed out, so switching the
+    # server over never locks anybody out.
+    wfh_desktop_app_required: bool = False
 
     # Comp-off earned when a worked day is later swapped off.
     comp_off_expiry_days: int = Field(default=90, ge=0, le=730)

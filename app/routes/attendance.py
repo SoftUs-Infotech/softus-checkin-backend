@@ -24,6 +24,7 @@ from app.schemas.attendance import (
 )
 from app.services import attendance as attendance_service
 from app.services import user as user_service
+from app.utils.client import Client
 from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser
 from app.utils.device import DesktopOnly, classify
 from app.utils.network import client_ip
@@ -41,6 +42,7 @@ async def punch_in(
     request: Request,
     current_user: CurrentUser,
     device: DesktopOnly,
+    client: Client,
 ) -> dict:
     record = await attendance_service.punch_in(
         current_user,
@@ -49,6 +51,7 @@ async def punch_in(
         user_agent=device.user_agent,
         device_class=device.device_class.value,
         platform=device.platform,
+        client=client,
     )
     return success(attendance_service.to_day_out(record), message="Punched in.")
 
@@ -59,6 +62,7 @@ async def punch_out(
     request: Request,
     current_user: CurrentUser,
     device: DesktopOnly,
+    client: Client,
 ) -> dict:
     record = await attendance_service.punch_out(
         current_user,
@@ -67,6 +71,7 @@ async def punch_out(
         user_agent=device.user_agent,
         device_class=device.device_class.value,
         platform=device.platform,
+        client=client,
     )
     return success(attendance_service.to_day_out(record), message="Punched out.")
 

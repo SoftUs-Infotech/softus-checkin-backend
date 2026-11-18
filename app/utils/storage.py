@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import hmac
 import re
+import shutil
 import time
 from abc import ABC, abstractmethod
 from functools import lru_cache
@@ -49,6 +50,10 @@ class StorageProvider(ABC):
         """Store the bytes under ``key``, or raise."""
 
     @abstractmethod
+    async def put_file(self, key: str, path: Path, content_type: str) -> None:
+        """Store a file from disk under ``key`` — for uploads too large to hold in memory."""
+
+    @abstractmethod
     async def delete_many(self, keys: list[str]) -> set[str]:
         """Delete these keys. Returns the keys that are now gone.
 
@@ -57,8 +62,15 @@ class StorageProvider(ABC):
         """
 
     @abstractmethod
-    def url_for(self, key: str, content_type: str) -> str:
-        """A short-lived link to the file.
+    def url_for(
+        self,
+        key: str,
+        content_type: str,
+        *,
+        expires_minutes: int | None = None,
+        filename: str | None = None,
+    ) -> str:
+        """A short-lived link to the file; with ``filename``, a download of that name.
 
         Absolute (``https://…``) for S3. For local files, a path relative to the
         API prefix, which the web app joins onto its own API address.
@@ -106,6 +118,15 @@ class LocalStorage(StorageProvider):
 
         await asyncio.to_thread(write)
 
+    async def put_file(self, key: str, path: Path, content_type: str) -> None:
+        target = self.path_for(key)
+
+        def copy() -> None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+
+        await asyncio.to_thread(copy)
+
     async def delete_many(self, keys: list[str]) -> set[str]:
         def remove() -> set[str]:
             gone: set[str] = set()
@@ -125,13 +146,25 @@ class LocalStorage(StorageProvider):
             return None
         return await asyncio.to_thread(path.read_bytes)
 
-    def url_for(self, key: str, content_type: str) -> str:
-        ttl = settings.SCREENSHOT_URL_EXPIRE_MINUTES * 60
+    def url_for(
+        self,
+        key: str,
+        content_type: str,
+        *,
+        expires_minutes: int | None = None,
+        filename: str | None = None,
+    ) -> str:
+        ttl = (expires_minutes or settings.SCREENSHOT_URL_EXPIRE_MINUTES) * 60
         expires = ((int(time.time()) + ttl) // _LINK_BUCKET_SECONDS + 1) * _LINK_BUCKET_SECONDS
-        query = urlencode(
-            {"key": key, "exp": expires, "sig": sign_local_link(key, expires), "type": content_type}
-        )
-        return f"/files?{query}"
+        params = {
+            "key": key,
+            "exp": expires,
+            "sig": sign_local_link(key, expires),
+            "type": content_type,
+        }
+        if filename:
+            params["name"] = filename
+        return f"/files?{urlencode(params)}"
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +199,16 @@ class S3Storage(StorageProvider):
             ContentType=content_type,
         )
 
+    async def put_file(self, key: str, path: Path, content_type: str) -> None:
+        # upload_file switches to a multipart upload for large files by itself.
+        await asyncio.to_thread(
+            self.client.upload_file,
+            str(path),
+            self.bucket,
+            _check_key(key),
+            ExtraArgs={"ContentType": content_type},
+        )
+
     async def delete_many(self, keys: list[str]) -> set[str]:
         gone: set[str] = set()
         for start in range(0, len(keys), self._DELETE_BATCH):
@@ -181,15 +224,21 @@ class S3Storage(StorageProvider):
             gone.update(key for key in batch if key not in failed)
         return gone
 
-    def url_for(self, key: str, content_type: str) -> str:
+    def url_for(
+        self,
+        key: str,
+        content_type: str,
+        *,
+        expires_minutes: int | None = None,
+        filename: str | None = None,
+    ) -> str:
+        params = {"Bucket": self.bucket, "Key": key, "ResponseContentType": content_type}
+        if filename:
+            params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
         return self.client.generate_presigned_url(
             "get_object",
-            Params={
-                "Bucket": self.bucket,
-                "Key": key,
-                "ResponseContentType": content_type,
-            },
-            ExpiresIn=settings.SCREENSHOT_URL_EXPIRE_MINUTES * 60,
+            Params=params,
+            ExpiresIn=(expires_minutes or settings.SCREENSHOT_URL_EXPIRE_MINUTES) * 60,
         )
 
 

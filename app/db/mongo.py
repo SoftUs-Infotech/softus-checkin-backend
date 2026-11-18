@@ -43,6 +43,8 @@ class Collections:
     GEOCODE_CACHE = "geocode_cache"
     SCREENSHOTS = "screenshots"
     CAPTURE_HEARTBEATS = "capture_heartbeats"
+    ACTIVITY = "activity"
+    APP_RELEASES = "app_releases"
 
 
 class _MongoState:

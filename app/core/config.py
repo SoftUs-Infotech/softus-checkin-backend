@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     SCREENSHOT_URL_EXPIRE_MINUTES: int = 15
     SCREENSHOT_MAX_BYTES: int = 4_000_000
 
+    # Desktop app builds uploaded from the admin panel (a .dmg / .zip / .AppImage
+    # is 100-200 MB), and how long a download link stays valid.
+    RELEASE_MAX_BYTES: int = 600_000_000
+    RELEASE_URL_EXPIRE_MINUTES: int = 60
+
     LOG_DIR: str = Field(default="logs")
 
     @field_validator("SECRET_KEY")

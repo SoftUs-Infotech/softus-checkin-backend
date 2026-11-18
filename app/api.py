@@ -6,7 +6,9 @@ Adding a feature means adding exactly one ``include_router`` line here.
 from fastapi import APIRouter
 
 from app.routes import (
+    activity,
     announcement,
+    app_release,
     attendance,
     auth,
     correction,
@@ -42,3 +44,5 @@ api_router.include_router(salary.router)
 api_router.include_router(settings.router)
 api_router.include_router(screenshot.router)
 api_router.include_router(files.router)
+api_router.include_router(activity.router)
+api_router.include_router(app_release.router)

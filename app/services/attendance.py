@@ -57,6 +57,7 @@ from app.schemas.attendance import (
     RegisterSort,
     SortDirection,
 )
+from app.services import app_release as release_service
 from app.services import audit
 from app.services import geocode as geocode_service
 from app.services import holiday as holiday_service
@@ -67,6 +68,7 @@ from app.services import shift as shift_service
 from app.services import work_calendar as work_calendar_service
 from app.services.attendance_rules import compute_day_status, employment_start, format_minutes
 from app.services.audit import Actor
+from app.utils.client import WEB, ClientInfo
 
 logger = get_logger(__name__)
 
@@ -353,15 +355,32 @@ async def _claim_request_key(user_id: str, action: str, request_key: str | None)
     return True
 
 
-async def _require_location(payload: PunchRequestBody) -> None:
+async def _require_location(payload: PunchRequestBody, client: ClientInfo = WEB) -> None:
     org_settings = await settings_service.get_settings()
     if not org_settings.get("geolocation_required", True):
+        return
+    # The desktop app on Linux has no way to read a location (browsers there
+    # use a Google service the app does not have). The network address is
+    # recorded with every punch instead.
+    if client.is_desktop and client.os == "linux":
         return
     if payload.location is None:
         raise ValidationError(
             "Your location is required to punch in or out. Allow location access "
             "in your browser and try again.",
             code="LOCATION_REQUIRED",
+        )
+
+
+async def _require_desktop_app(user: dict[str, Any], client: ClientInfo) -> None:
+    """Working from home, and the organisation wants punches from the desktop app."""
+    if client.is_desktop or not works_from_home(user):
+        return
+    org_settings = await settings_service.get_settings()
+    if org_settings.get("wfh_desktop_app_required", False):
+        raise PermissionDeniedError(
+            "To punch in, use the Softus Checkin desktop app.",
+            code="DESKTOP_APP_REQUIRED",
         )
 
 
@@ -445,6 +464,7 @@ async def punch_in(
     user_agent: str,
     device_class: str,
     platform: str,
+    client: ClientInfo = WEB,
 ) -> dict[str, Any]:
     now = utc_now()
     day = attendance_date(now)
@@ -454,9 +474,12 @@ async def punch_in(
         return await recompute_day(user["id"], day, user=user)
 
     _require_punch_permission(user)
+    await _require_desktop_app(user, client)
+    # An app older than the published version updates before it punches in.
+    await release_service.require_current(client)
     # Working from home: the screen has to be shared before the day starts.
     await screenshot_service.require_recent_capture(user)
-    await _require_location(payload)
+    await _require_location(payload, client)
 
     shift = await shift_for_user(user)
     document = await ensure_day_document(user, day, shift)
@@ -519,6 +542,7 @@ async def punch_out(
     user_agent: str,
     device_class: str,
     platform: str,
+    client: ClientInfo = WEB,
 ) -> dict[str, Any]:
     now = utc_now()
     day = attendance_date(now)
@@ -528,7 +552,7 @@ async def punch_out(
         return await recompute_day(user["id"], day, user=user)
 
     _require_punch_permission(user)
-    await _require_location(payload)
+    await _require_location(payload, client)
 
     document = await _attendance().find_one({"user_id": user["id"], "date": date_key(day)})
 
@@ -646,6 +670,8 @@ async def get_today(user: dict[str, Any], *, device_class: str = "UNKNOWN") -> d
         "screen_capture_interval_minutes": int(
             org_settings.get("wfh_screenshot_interval_minutes") or 10
         ),
+        "desktop_app_required": works_from_home(user)
+        and bool(org_settings.get("wfh_desktop_app_required", False)),
     }
 
 

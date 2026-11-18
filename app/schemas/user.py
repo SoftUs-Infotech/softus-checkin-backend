@@ -46,6 +46,16 @@ class UserAdminUpdate(UserProfileUpdate):
     can_punch: bool | None = None
 
 
+class DesktopAppOut(BaseModel):
+    """The desktop app this person last used."""
+
+    version: str | None = None
+    os: str | None = None
+    arch: str | None = None
+    os_version: str | None = None
+    last_seen_at: datetime | None = None
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -71,6 +81,8 @@ class UserOut(BaseModel):
     can_punch: bool = True
     last_login_at: datetime | None = None
     created_at: datetime | None = None
+    desktop_app: DesktopAppOut | None = None
+    web_last_seen_at: datetime | None = None
 
     @classmethod
     def from_document(cls, document: dict[str, Any]) -> "UserOut":
