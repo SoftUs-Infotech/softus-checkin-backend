@@ -18,6 +18,7 @@ JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 256
 ZIP = b"PK\x03\x04" + b"\x00" * 2048
 APPIMAGE = b"\x7fELF" + b"\x00" * 2048
 DMG = b"\x00" * 2048 + b"koly" + b"\x00" * 508
+EXE = b"MZ" + b"\x00" * 2048
 
 
 def desktop(version: str = "1.0.0", platform: str = "darwin-arm64") -> dict[str, str]:
@@ -129,6 +130,7 @@ async def test_a_release_is_uploaded_as_a_draft_and_published(admin_client, api_
     assert (await admin_client.get(f"{api_prefix}/app-releases/published")).json()["data"] == {
         "mac": "1.0.1",
         "linux": None,
+        "windows": None,
     }
     # Published files are on disk where the release says.
     assert (_isolated / "releases/mac/1.0.1/softus-checkin-1.0.1-mac-arm64.zip").read_bytes() == ZIP
@@ -219,6 +221,48 @@ async def test_a_release_is_withdrawn_before_it_can_be_deleted(admin_client, api
     assert not (_isolated / "releases/mac/1.0.1/softus-checkin-1.0.1-mac-arm64.zip").exists()
 
 
+async def test_a_windows_release_is_an_installer_exe(admin_client, api_prefix, _isolated):
+    name = "softus-checkin-1.0.1-win-x64.exe"
+    not_a_program = await _upload_release(admin_client, api_prefix, "1.0.1", "windows", name, ZIP)
+    assert not_a_program.json()["error"]["code"] == "NOT_A_RELEASE_FILE"
+    wrong_kind = await _upload_release(
+        admin_client, api_prefix, "1.0.1", "windows", "softus-checkin-1.0.1-mac-x64.zip", ZIP
+    )
+    assert wrong_kind.json()["error"]["code"] == "WRONG_FILE_FOR_PLATFORM"
+
+    exe = await _upload_release(admin_client, api_prefix, "1.0.1", "windows", name, EXE)
+    assert exe.status_code == 201, exe.text
+    release = exe.json()["data"]
+    assert release["platform"] == "windows" and release["updatable"] is True
+    assert [(f["arch"], f["kind"]) for f in release["files"]] == [("x64", "exe")]
+    assert (_isolated / f"releases/windows/1.0.1/{name}").read_bytes() == EXE
+
+    published = await admin_client.post(f"{api_prefix}/app-releases/{release['id']}/publish")
+    assert published.status_code == 200, published.text
+    versions = (await admin_client.get(f"{api_prefix}/app-releases/published")).json()["data"]
+    assert versions == {"mac": None, "linux": None, "windows": "1.0.1"}
+    latest = await admin_client.get(
+        f"{api_prefix}/app-releases/latest", params={"platform": "windows", "arch": "x64"}
+    )
+    assert [f["filename"] for f in latest.json()["data"]["files"]] == [name]
+
+    # An older Windows app updates before it punches in; a Mac is not affected.
+    client, _ = await _employee(admin_client, api_prefix, "win@example.com", wfh=True)
+    async with client:
+        await client.post(
+            f"{api_prefix}/screenshots", files={"file": ("s.jpg", JPEG, "image/jpeg")}
+        )
+        client.headers.update(desktop("1.0.0", "win32-x64"))
+        refused = await client.post(f"{api_prefix}/attendance/punch-in", json={})
+        assert refused.json()["error"] == {
+            "code": "APP_UPDATE_REQUIRED",
+            "details": {"version": "1.0.1"},
+        }
+        client.headers.update(desktop("1.0.1", "win32-x64"))
+        current = await client.post(f"{api_prefix}/attendance/punch-in", json={})
+        assert current.status_code == 200, current.text
+
+
 # --------------------------------------------------------------------------- #
 # punching in from the app
 # --------------------------------------------------------------------------- #
@@ -306,6 +350,26 @@ async def test_the_linux_app_punches_without_a_location(admin_client, api_prefix
         client.headers.update(desktop("1.0.0", "linux-x64"))
         linux = await client.post(f"{api_prefix}/attendance/punch-in", json={})
         assert linux.status_code == 200, linux.text
+
+
+async def test_the_windows_app_punches_with_or_without_a_location(admin_client, api_prefix):
+    """Windows answers only when its location service is on; the app punches either way."""
+    for email, body in (
+        ("win-here@example.com", {"location": OFFICE_LOCATION}),
+        ("win-unknown@example.com", {}),
+    ):
+        client, _ = await _employee(admin_client, api_prefix, email, wfh=True)
+        async with client:
+            await client.post(
+                f"{api_prefix}/screenshots", files={"file": ("s.jpg", JPEG, "image/jpeg")}
+            )
+            client.headers.update(desktop("1.0.0", "win32-x64"))
+            punched = await client.post(f"{api_prefix}/attendance/punch-in", json=body)
+            assert punched.status_code == 200, punched.text
+            # A Mac app still has to send one.
+            client.headers.update(desktop("1.0.0", "darwin-arm64"))
+            out = await client.post(f"{api_prefix}/attendance/punch-out", json={})
+            assert out.json()["error"]["code"] == "LOCATION_REQUIRED"
 
 
 # --------------------------------------------------------------------------- #

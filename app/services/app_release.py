@@ -59,6 +59,7 @@ _EXTENSIONS = {
     ".zip": ReleaseFileKind.ZIP,
     ".dmg": ReleaseFileKind.DMG,
     ".appimage": ReleaseFileKind.APPIMAGE,
+    ".exe": ReleaseFileKind.EXE,
 }
 
 
@@ -204,7 +205,8 @@ def _kind_of(filename: str) -> ReleaseFileKind:
     suffix = Path(filename).suffix.lower()
     if suffix not in _EXTENSIONS:
         raise ValidationError(
-            "Upload a .dmg or .zip (Mac) or an .AppImage (Linux).", code="UNSUPPORTED_RELEASE_FILE"
+            "Upload a .dmg or .zip (Mac), an .AppImage (Linux) or an .exe (Windows).",
+            code="UNSUPPORTED_RELEASE_FILE",
         )
     return _EXTENSIONS[suffix]
 
@@ -229,6 +231,9 @@ def _looks_like(kind: ReleaseFileKind, head: bytes, tail: bytes) -> bool:
         return head.startswith(b"PK\x03\x04")
     if kind is ReleaseFileKind.APPIMAGE:
         return head.startswith(b"\x7fELF")
+    if kind is ReleaseFileKind.EXE:
+        # Every Windows program starts with the "MZ" header.
+        return head.startswith(b"MZ")
     # A disk image ends with a 512-byte "koly" trailer.
     return tail[-512:].startswith(b"koly")
 
@@ -250,7 +255,9 @@ async def upload(
     try:
         platform_enum = ReleasePlatform(platform)
     except ValueError:
-        raise ValidationError("Platform must be mac or linux.", code="UNKNOWN_PLATFORM") from None
+        raise ValidationError(
+            "Platform must be mac, linux or windows.", code="UNKNOWN_PLATFORM"
+        ) from None
 
     original = Path(file.filename or "").name
     kind = _kind_of(original)

@@ -39,3 +39,4 @@ class PublishedVersions(BaseModel):
 
     mac: str | None = None
     linux: str | None = None
+    windows: str | None = None

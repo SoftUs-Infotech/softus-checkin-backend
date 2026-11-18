@@ -360,9 +360,10 @@ async def _require_location(payload: PunchRequestBody, client: ClientInfo = WEB)
     if not org_settings.get("geolocation_required", True):
         return
     # The desktop app on Linux has no way to read a location (browsers there
-    # use a Google service the app does not have). The network address is
-    # recorded with every punch instead.
-    if client.is_desktop and client.os == "linux":
+    # use a Google service the app does not have), and on Windows it gets one
+    # only when Windows' own location service answers. The network address is
+    # recorded with every punch instead; a location that did come is kept.
+    if client.is_desktop and client.os in ("linux", "win32"):
         return
     if payload.location is None:
         raise ValidationError(

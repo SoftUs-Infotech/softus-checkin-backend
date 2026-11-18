@@ -20,7 +20,7 @@ router = APIRouter(prefix="/app-releases", tags=["desktop app"])
 @router.get("/latest", summary="The version this app should be on, with download links")
 async def latest_release(
     _: CurrentUser,
-    platform: Annotated[str, Query(pattern="^(mac|linux)$")],
+    platform: Annotated[str, Query(pattern="^(mac|linux|windows)$")],
     arch: Annotated[str | None, Query(pattern="^(arm64|x64|universal)$")] = None,
 ) -> dict:
     release = await release_service.latest_for(platform, arch)
@@ -46,8 +46,10 @@ async def upload_release_file(
     _: CurrentAdmin,
     actor: CurrentActor,
     version: Annotated[str, Form(min_length=5, max_length=40)],
-    platform: Annotated[str, Form(pattern="^(mac|linux)$")],
-    file: Annotated[UploadFile, File(description=".dmg / .zip (Mac) or .AppImage (Linux)")],
+    platform: Annotated[str, Form(pattern="^(mac|linux|windows)$")],
+    file: Annotated[
+        UploadFile, File(description=".dmg / .zip (Mac), .AppImage (Linux) or .exe (Windows)")
+    ],
     arch: Annotated[str | None, Form(max_length=20)] = None,
     notes: Annotated[str | None, Form(max_length=2000)] = None,
 ) -> dict:

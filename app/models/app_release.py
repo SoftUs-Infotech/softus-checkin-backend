@@ -1,9 +1,10 @@
 """A version of the desktop app, uploaded and published from the admin panel.
 
-One release is one version for one platform (``mac`` or ``linux``). It holds the
-files of that version — for the Mac a ``.zip`` (what the app updates itself
-from) and a ``.dmg`` (what a person installs the first time), per processor;
-for Linux an ``.AppImage``, which is both.
+One release is one version for one platform (``mac``, ``linux`` or ``windows``).
+It holds the files of that version — for the Mac a ``.zip`` (what the app
+updates itself from) and a ``.dmg`` (what a person installs the first time), per
+processor; for Linux an ``.AppImage`` and for Windows an installer ``.exe``,
+each of which is both.
 
 A release is a draft until an administrator publishes it. The newest published
 release of a platform is the version every desktop app on that platform has to
@@ -22,6 +23,7 @@ from app.models.base import MongoModel
 class ReleasePlatform(StrEnum):
     MAC = "mac"
     LINUX = "linux"
+    WINDOWS = "windows"
 
 
 class ReleaseStatus(StrEnum):
@@ -36,22 +38,26 @@ class ReleaseFileKind(StrEnum):
     ZIP = "zip"  # Mac: the app updates itself from this
     DMG = "dmg"  # Mac: first install
     APPIMAGE = "appimage"  # Linux: install and update
+    EXE = "exe"  # Windows: the installer, for the first install and for updates
 
 
 #: Which kind of file the app downloads to update itself, per platform.
 UPDATE_KIND = {
     ReleasePlatform.MAC: ReleaseFileKind.ZIP,
     ReleasePlatform.LINUX: ReleaseFileKind.APPIMAGE,
+    ReleasePlatform.WINDOWS: ReleaseFileKind.EXE,
 }
 #: Which kinds a platform takes at all.
 KINDS_FOR = {
     ReleasePlatform.MAC: {ReleaseFileKind.ZIP, ReleaseFileKind.DMG},
     ReleasePlatform.LINUX: {ReleaseFileKind.APPIMAGE},
+    ReleasePlatform.WINDOWS: {ReleaseFileKind.EXE},
 }
 CONTENT_TYPE = {
     ReleaseFileKind.ZIP: "application/zip",
     ReleaseFileKind.DMG: "application/x-apple-diskimage",
     ReleaseFileKind.APPIMAGE: "application/octet-stream",
+    ReleaseFileKind.EXE: "application/vnd.microsoft.portable-executable",
 }
 
 
