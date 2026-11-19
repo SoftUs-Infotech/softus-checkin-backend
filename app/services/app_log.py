@@ -12,7 +12,7 @@ from typing import Any
 from bson import ObjectId
 
 from app.core import rate_limit
-from app.core.datetime import attendance_date, date_key, to_utc, utc_now
+from app.core.datetime import attendance_date, date_key, to_org_tz, to_utc, utc_now
 from app.core.exceptions import NotFoundError
 from app.core.logging import get_logger
 from app.db.mongo import Collections, get_collection
@@ -183,6 +183,13 @@ def _os_label(os_name: str | None, os_version: str | None) -> str:
     return ""
 
 
+def _instant(value: Any) -> datetime | None:
+    try:
+        return to_utc(datetime.fromisoformat(str(value))) if value else None
+    except ValueError:
+        return None
+
+
 def _duration(minutes: int) -> str:
     hours, rest = divmod(max(0, minutes), 60)
     if hours and rest:
@@ -226,7 +233,11 @@ def message_for(event: dict[str, Any]) -> str:
         return f"Punched out ({details.get('via') or 'app'})"
     if kind == AppEventKind.AUTO_PUNCHED_OUT:
         reason = _REASON_TEXT.get(details.get("reason") or "", "the screen stopped being shared")
-        return f"Punched out automatically — {reason.format(minutes=details.get('minutes') or '?')}"
+        text = f"Punched out automatically — {reason.format(minutes=details.get('minutes') or '?')}"
+        ended = _instant(details.get("ended_at"))
+        if ended is not None and to_utc(event["at"]) - ended >= timedelta(minutes=1):
+            text += f" (session ended {to_org_tz(ended):%H:%M})"
+        return text
     if kind == AppEventKind.APP_UPDATED:
         return f"App updated {details.get('from')} → {details.get('to')}"
     return str(kind)

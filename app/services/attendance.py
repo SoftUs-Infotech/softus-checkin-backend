@@ -1274,12 +1274,14 @@ async def end_session_for_capture_loss(
         ended.isoformat(),
         reason,
     )
-    details: dict[str, Any] = {"reason": reason}
+    # Logged when it was decided, saying where the session ended — so the log
+    # reads in the order things happened.
+    details: dict[str, Any] = {"reason": reason, "ended_at": ended.isoformat()}
     if setting:
         details["setting"] = setting
     if minutes is not None:
         details["minutes"] = minutes
-    await app_log.record(user["id"], AppEventKind.AUTO_PUNCHED_OUT, at=ended, details=details)
+    await app_log.record(user["id"], AppEventKind.AUTO_PUNCHED_OUT, details=details)
     if notify:
         # The app or page may not have been in front of them. It says only
         # *that* they were punched out (and, for a setting, to allow it): the

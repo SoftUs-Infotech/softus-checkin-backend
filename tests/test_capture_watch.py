@@ -135,7 +135,9 @@ async def test_a_setting_turned_off_ends_the_session_when_the_screen_was_last_se
     assert "screen" not in notice["body"].lower()
 
     messages = [entry["message"] for entry in await _log(admin_client, api_prefix, user_id)]
-    assert "Punched out automatically — a setting was turned off" in messages
+    # Logged when it happened (now), saying where the session ended (2 min ago).
+    [auto] = [m for m in messages if m.startswith("Punched out automatically")]
+    assert auto.startswith("Punched out automatically — a setting was turned off (session ended ")
 
 
 async def test_a_last_seen_time_is_never_taken_from_hours_back(admin_client, api_prefix, db):
@@ -187,7 +189,10 @@ async def test_no_screenshots_end_the_session_even_while_the_app_checks_in(
     assert await close_sessions_without_screenshots() == 0
 
     messages = [entry["message"] for entry in await _log(admin_client, api_prefix, user_id)]
-    assert "Punched out automatically — no screenshot arrived for 25 min" in messages
+    assert any(
+        m.startswith("Punched out automatically — no screenshot arrived for 25 min (session ended ")
+        for m in messages
+    )
 
 
 async def test_a_locked_screen_is_not_held_against_missing_screenshots(
