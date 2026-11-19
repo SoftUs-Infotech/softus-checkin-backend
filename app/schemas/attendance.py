@@ -59,6 +59,10 @@ class SessionOut(BaseModel):
     #: Set when the system ended the session — ``SCREEN_SHARE_STOPPED`` for
     #: somebody working from home whose screen stopped being shared.
     closed_reason: str | None = None
+    #: Which loss it was, when ``closed_reason`` is set: ``SETTING_OFF``,
+    #: ``SCREEN_NOT_VISIBLE``, ``NO_SCREENSHOTS``, ``NO_CHECKINS``, ``APP_CLOSED``,
+    #: ``SHARING_STOPPED`` or ``WORK_MODE_CHANGED``. The app picks its popup by it.
+    closed_detail: str | None = None
     duration_minutes: int = 0
 
 

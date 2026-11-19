@@ -119,6 +119,7 @@ async def test_a_setting_turned_off_ends_the_session_when_the_screen_was_last_se
         assert stopped.status_code == 200, stopped.text
         [session] = stopped.json()["data"]["sessions"]
         assert session["closed_reason"] == "SCREEN_SHARE_STOPPED"
+        assert session["closed_detail"] == "SETTING_OFF"
     finally:
         await client.aclose()
 

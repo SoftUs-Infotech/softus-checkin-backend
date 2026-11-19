@@ -284,6 +284,7 @@ def to_day_out(record: dict[str, Any]) -> AttendanceDayOut:
                 "punch_out": punch_out,
                 "auto_closed": session.get("auto_closed", False),
                 "closed_reason": session.get("closed_reason"),
+                "closed_detail": session.get("closed_detail"),
                 "duration_minutes": max(0, duration),
             }
         )
