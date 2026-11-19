@@ -67,3 +67,30 @@ class ActivityDay(BaseModel):
     totals: ActivityFigures
     active_percent: int = 0
     windows: list[ActivityWindow]
+
+
+class AppEventIn(BaseModel):
+    """One line of the app log, as the desktop app reports it."""
+
+    at: AwareDatetime
+    kind: str = Field(min_length=1, max_length=40)
+    details: dict[str, str | int | bool | None] = Field(default_factory=dict, max_length=10)
+
+
+class AppEventsUpload(BaseModel):
+    events: list[AppEventIn] = Field(min_length=1, max_length=50)
+
+
+class AppEventsUploadOut(BaseModel):
+    accepted: int
+    ignored: int
+
+
+class AppLogEntry(BaseModel):
+    at: datetime
+    #: Set for a span, such as the screen being locked from ``at`` until this.
+    until: datetime | None = None
+    kind: str
+    #: ``app`` (reported by the desktop app) or ``server`` (decided or seen by the server).
+    source: str
+    message: str

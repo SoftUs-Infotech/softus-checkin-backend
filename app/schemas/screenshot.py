@@ -2,8 +2,9 @@
 
 from datetime import date as date_type
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 from app.models.user import UserStatus, WorkMode
 
@@ -25,6 +26,23 @@ class ScreenshotOut(BaseModel):
     #: Short-lived. Absolute for S3; for local storage, a path under the API
     #: prefix (``/files?…``) that the web app joins onto its API address.
     url: str
+
+
+class CaptureStoppedIn(BaseModel):
+    """Why the screen stopped being shared, when the app or page can say.
+
+    No body at all (the browser's "Stop sharing", a closed page) means
+    ``SHARING_STOPPED`` now.
+    """
+
+    reason: Literal["SETTING_OFF", "SCREEN_NOT_VISIBLE", "APP_CLOSED", "SHARING_STOPPED"] = (
+        "SHARING_STOPPED"
+    )
+    #: The last moment the screen was known to be visible. Defaults to now; a
+    #: moment before the session started counts as its start.
+    at: AwareDatetime | None = None
+    #: Which setting, for ``SETTING_OFF``: ``screen`` or ``input``.
+    setting: Literal["screen", "input"] | None = None
 
 
 class ScreenshotDay(BaseModel):

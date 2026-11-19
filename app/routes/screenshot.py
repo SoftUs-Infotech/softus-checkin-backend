@@ -6,13 +6,15 @@ is for administrators.
 """
 
 from datetime import date as date_type
+from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, Query, UploadFile, status
 
 from app.core.config import settings
-from app.core.datetime import org_today, utc_now
+from app.core.datetime import org_today, to_utc, utc_now
 from app.schemas.screenshot import (
+    CaptureStoppedIn,
     ScreenshotDay,
     ScreenshotDelete,
     ScreenshotDeleteOut,
@@ -26,6 +28,9 @@ from app.utils.deps import CurrentActor, CurrentAdmin, CurrentUser
 from app.utils.response import success
 
 router = APIRouter(prefix="/screenshots", tags=["screenshots"])
+
+#: A reported "last seen" further back than this is taken as this long ago.
+STOPPED_AT_EARLIEST = timedelta(hours=2)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Upload a screenshot")
@@ -49,14 +54,30 @@ async def capture_heartbeat(current_user: CurrentUser) -> dict:
 
 
 @router.post("/stopped", summary="Screen sharing stopped — punch out")
-async def capture_stopped(current_user: CurrentUser) -> dict:
-    """The browser reporting that the shared screen went away.
+async def capture_stopped(
+    current_user: CurrentUser, payload: CaptureStoppedIn | None = None
+) -> dict:
+    """The browser or the desktop app reporting that the screen went away.
 
-    Sent when the employee presses the browser's "Stop sharing", and as the
-    page closes or reloads. Ends the open session now; nothing open is fine.
+    The browser sends it when the employee presses "Stop sharing" and as the
+    page closes or reloads; the desktop app when its window closes, when a
+    setting it needs was turned off, or when it could not see the screen. Ends
+    the open session at the last moment the screen was visible (never earlier
+    than two hours ago); nothing open is fine.
     """
     screenshot_service.require_wfh(current_user)
-    record = await attendance_service.end_session_for_capture_loss(current_user, at=utc_now())
+    payload = payload or CaptureStoppedIn()
+    now = utc_now()
+    at = now
+    if payload.at is not None:
+        at = min(now, max(to_utc(payload.at), now - STOPPED_AT_EARLIEST))
+    record = await attendance_service.end_session_for_capture_loss(
+        current_user,
+        at=at,
+        reason=payload.reason,
+        notify=payload.reason in ("SETTING_OFF", "SCREEN_NOT_VISIBLE"),
+        setting=payload.setting,
+    )
     if record is None:
         return success(None, message="Nothing was open.")
     return success(

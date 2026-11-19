@@ -33,6 +33,7 @@ from app.core.exceptions import (
 from app.core.logging import get_logger
 from app.db.mongo import Collections, get_collection
 from app.models.announcement import NotificationType
+from app.models.app_event import AppEventKind
 from app.models.attendance import (
     STATUS_COLORS,
     STATUS_LABELS,
@@ -57,8 +58,8 @@ from app.schemas.attendance import (
     RegisterSort,
     SortDirection,
 )
+from app.services import app_log, audit
 from app.services import app_release as release_service
-from app.services import audit
 from app.services import geocode as geocode_service
 from app.services import holiday as holiday_service
 from app.services import notification as notification_service
@@ -73,8 +74,21 @@ from app.utils.client import WEB, ClientInfo
 logger = get_logger(__name__)
 
 
-#: Why the system, rather than the employee, ended a session.
+#: Why the system, rather than the employee, ended a session. Every ending for
+#: lost screen capture carries it; ``closed_detail`` says which loss it was
+#: (see the reasons in :mod:`app.services.app_log`).
 SCREEN_SHARE_STOPPED = "SCREEN_SHARE_STOPPED"
+
+#: A work-from-home session ends when no screenshot has arrived for this many
+#: screenshot intervals plus ``NO_SCREENSHOT_GRACE`` — one is taken at a random
+#: moment in every interval, so two intervals apart is the longest a working
+#: app ever leaves it. Time with the screen locked does not count.
+NO_SCREENSHOT_INTERVALS = 2
+NO_SCREENSHOT_GRACE = timedelta(minutes=5)
+
+
+def _via(client: ClientInfo) -> str:
+    return "app" if client.is_desktop else "website"
 
 
 def _attendance():
@@ -532,6 +546,14 @@ async def punch_in(
         },
     )
     logger.info("%s punched in at %s", user["email"], now.isoformat())
+    if works_from_home(user):
+        await app_log.record(
+            user["id"],
+            AppEventKind.PUNCHED_IN,
+            at=now,
+            details={"via": _via(client)},
+            client=client,
+        )
     return await recompute_day(user["id"], day, user=user)
 
 
@@ -608,6 +630,14 @@ async def punch_out(
         {"$set": {f"sessions.{open_index}.punch_out": event, "updated_at": now}},
     )
     logger.info("%s punched out at %s", user["email"], now.isoformat())
+    if works_from_home(user):
+        await app_log.record(
+            user["id"],
+            AppEventKind.PUNCHED_OUT,
+            at=now,
+            details={"via": _via(client)},
+            client=client,
+        )
     return await recompute_day(user["id"], day, user=user)
 
 
@@ -1170,14 +1200,21 @@ async def adjust_day(
 # working from home: the session lasts as long as the shared screen
 # --------------------------------------------------------------------------- #
 async def end_session_for_capture_loss(
-    user: dict[str, Any], *, at: datetime, notify: bool = False
+    user: dict[str, Any],
+    *,
+    at: datetime,
+    notify: bool = False,
+    reason: str = app_log.SHARING_STOPPED,
+    setting: str | None = None,
+    minutes: int | None = None,
 ) -> dict[str, Any] | None:
     """Punch somebody working from home out because their screen stopped being shared.
 
     ``at`` is when sharing stopped — now, when the browser says so; the last
     sign of life, when the server notices the silence — so the time after it is
-    not counted as worked. Returns the recomputed day, or None when nothing was
-    open.
+    not counted as worked. ``reason`` is which loss it was, for the
+    administrator's app log. Returns the recomputed day, or None when nothing
+    was open.
     """
     today = attendance_date(utc_now())
     documents = await _attendance().find(
@@ -1221,6 +1258,7 @@ async def end_session_for_capture_loss(
             "$set": {
                 f"sessions.{index}.punch_out": event,
                 f"sessions.{index}.closed_reason": SCREEN_SHARE_STOPPED,
+                f"sessions.{index}.closed_detail": reason,
                 "updated_at": utc_now(),
             }
         },
@@ -1229,31 +1267,42 @@ async def end_session_for_capture_loss(
     if result.modified_count == 0:
         return await recompute_day(user["id"], day, user=user)
 
-    logger.info("%s punched out at %s: screen sharing stopped", user["email"], ended.isoformat())
+    logger.info(
+        "%s punched out at %s: screen sharing stopped (%s)",
+        user["email"],
+        ended.isoformat(),
+        reason,
+    )
+    details: dict[str, Any] = {"reason": reason}
+    if setting:
+        details["setting"] = setting
+    if minutes is not None:
+        details["minutes"] = minutes
+    await app_log.record(user["id"], AppEventKind.AUTO_PUNCHED_OUT, at=ended, details=details)
     if notify:
-        # The browser could not say so itself — a closed tab, a sleeping
-        # laptop — so they may not have seen it happen. It says only *that* they
-        # were punched out: the reason is for the administrator, on their day.
+        # The app or page may not have been in front of them. It says only
+        # *that* they were punched out (and, for a setting, to allow it): the
+        # reason is for the administrator, on their day and in the app log.
+        then = f"{to_org_tz(ended):%H:%M}"
+        body = (
+            f"You were punched out at {then}. Please allow the setting and punch in again."
+            if reason == app_log.SETTING_OFF
+            else f"You were punched out at {then}. Please punch in again."
+        )
         await notification_service.notify(
             user["id"],
             type=NotificationType.ATTENDANCE_ADJUSTED,
             title="You were punched out",
-            body=f"You were punched out at {to_org_tz(ended):%H:%M}. Please punch in again.",
+            body=body,
             link="/",
         )
     return await recompute_day(user["id"], day, user=user)
 
 
-async def close_unshared_sessions(*, now: datetime | None = None) -> int:
-    """End the sessions of people working from home whose screen went quiet.
-
-    The browser reports a stop itself whenever it can. This is for when it
-    cannot: nothing heard for ``CAPTURE_TIMEOUT_SECONDS`` and the session ends
-    at the last moment the screen was known to be shared.
-    """
-    now = now or utc_now()
-    cutoff = now - timedelta(seconds=screenshot_service.CAPTURE_TIMEOUT_SECONDS)
-
+async def _open_home_sessions(
+    now: datetime,
+) -> tuple[dict[str, dict[str, Any]], list[tuple[dict[str, Any], datetime]]]:
+    """Everybody working from home, and each open session of theirs with its start."""
     people = {
         str(user["_id"]): serialize(user)
         async for user in _users().find(
@@ -1265,7 +1314,7 @@ async def close_unshared_sessions(*, now: datetime | None = None) -> int:
         )
     }
     if not people:
-        return 0
+        return people, []
 
     today = attendance_date(now)
     documents = await _attendance().find(
@@ -1275,27 +1324,88 @@ async def close_unshared_sessions(*, now: datetime | None = None) -> int:
             "sessions": {"$elemMatch": {"punch_out": None, "auto_closed": {"$ne": True}}},
         }
     ).to_list(length=None)
-    seen = await screenshot_service.last_seen_map(list(people))
-
-    closed = 0
+    open_sessions = []
     for document in documents:
         open_session = next(
             session
             for session in _session_dicts(document)
             if session.get("punch_out") is None and not session.get("auto_closed")
         )
-        started = to_utc(open_session["punch_in"]["at"])
+        open_sessions.append((document, to_utc(open_session["punch_in"]["at"])))
+    return people, open_sessions
+
+
+async def close_unshared_sessions(*, now: datetime | None = None) -> int:
+    """End the sessions of people working from home whose screen went quiet.
+
+    The browser reports a stop itself whenever it can. This is for when it
+    cannot: nothing heard for ``CAPTURE_TIMEOUT_SECONDS`` and the session ends
+    at the last moment the screen was known to be shared.
+    """
+    now = now or utc_now()
+    cutoff = now - timedelta(seconds=screenshot_service.CAPTURE_TIMEOUT_SECONDS)
+    people, open_sessions = await _open_home_sessions(now)
+    if not open_sessions:
+        return 0
+    seen = await screenshot_service.last_seen_map(list(people))
+
+    closed = 0
+    for document, started in open_sessions:
         last_seen = max(seen.get(document["user_id"], started), started)
         if last_seen >= cutoff:
             continue
         ended = await end_session_for_capture_loss(
-            people[document["user_id"]], at=last_seen, notify=True
+            people[document["user_id"]], at=last_seen, notify=True, reason=app_log.NO_CHECKINS
         )
         if ended is not None:
             closed += 1
 
     if closed:
         logger.info("Ended %d work-from-home session(s) whose screen stopped being shared.", closed)
+    return closed
+
+
+async def close_sessions_without_screenshots(*, now: datetime | None = None) -> int:
+    """End the sessions of people working from home whose screenshots stopped.
+
+    The app checking in only says the app is running. Screenshots are what show
+    the screen is really being captured, so when none has arrived for two
+    screenshot intervals plus a few minutes, the session ends at the last one —
+    whatever the app says. Minutes with the screen locked are not held against
+    them: a locked screen cannot always be captured, and is shown to the
+    administrator anyway.
+    """
+    now = now or utc_now()
+    interval = timedelta(minutes=await screenshot_service.interval_minutes())
+    limit = NO_SCREENSHOT_INTERVALS * interval + NO_SCREENSHOT_GRACE
+    people, open_sessions = await _open_home_sessions(now)
+
+    closed = 0
+    for document, started in open_sessions:
+        if now - started <= limit:
+            continue
+        user_id = document["user_id"]
+        last_shot = await screenshot_service.last_capture_at(user_id)
+        since = max(last_shot or started, started)
+        if now - since <= limit:
+            continue
+        locked_minutes = await get_collection(Collections.ACTIVITY).count_documents(
+            {"user_id": user_id, "minute": {"$gte": since}, "locked_seconds": {"$gte": 30}}
+        )
+        if now - since - timedelta(minutes=locked_minutes) <= limit:
+            continue
+        ended = await end_session_for_capture_loss(
+            people[user_id],
+            at=since,
+            notify=True,
+            reason=app_log.NO_SCREENSHOTS,
+            minutes=int(limit.total_seconds() // 60),
+        )
+        if ended is not None:
+            closed += 1
+
+    if closed:
+        logger.info("Ended %d work-from-home session(s) that stopped sending screenshots.", closed)
     return closed
 
 

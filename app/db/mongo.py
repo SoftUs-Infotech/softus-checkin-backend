@@ -45,6 +45,7 @@ class Collections:
     CAPTURE_HEARTBEATS = "capture_heartbeats"
     ACTIVITY = "activity"
     APP_RELEASES = "app_releases"
+    APP_EVENTS = "app_events"
 
 
 class _MongoState:

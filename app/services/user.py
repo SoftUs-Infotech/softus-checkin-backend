@@ -245,6 +245,16 @@ async def update_user(
         ) from exc
 
     updated = await require_user(user_id)
+    if updated.get("work_mode") == WorkMode.WFH and existing.get("work_mode") != WorkMode.WFH:
+        # Punched in before working from home: that session had no screen
+        # shared. It ends now, at the switch — not at its own start, which is
+        # where the screen-sharing check would otherwise end it.
+        from app.services import app_log
+        from app.services.attendance import end_session_for_capture_loss
+
+        await end_session_for_capture_loss(
+            updated, at=utc_now(), notify=True, reason=app_log.WORK_MODE_CHANGED
+        )
     if actor is not None:
         await audit.record_change(
             actor,

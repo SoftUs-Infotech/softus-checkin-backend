@@ -56,9 +56,23 @@ async def note(user: dict[str, Any], client: ClientInfo) -> None:
         return
     _written[key] = (signature, time.monotonic())
     try:
-        await get_collection(Collections.USERS).update_one(
-            {"_id": ObjectId(user_id)}, {"$set": update}
+        before = await get_collection(Collections.USERS).find_one_and_update(
+            {"_id": ObjectId(user_id)},
+            {"$set": update},
+            projection={"desktop_app.version": 1},
         )
     except Exception:  # noqa: BLE001 - bookkeeping must never fail a request
         _written.pop(key, None)
         logger.exception("Could not record the client for %s", user_id)
+        return
+    previous = ((before or {}).get("desktop_app") or {}).get("version")
+    if client.is_desktop and previous and client.version and previous != client.version:
+        from app.models.app_event import AppEventKind
+        from app.services import app_log
+
+        await app_log.record(
+            user_id,
+            AppEventKind.APP_UPDATED,
+            details={"from": previous, "to": client.version},
+            client=client,
+        )

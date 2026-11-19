@@ -201,6 +201,17 @@ INDEXES: dict[str, list[IndexModel]] = {
             name="release_published",
         ),
     ],
+    Collections.APP_EVENTS: [
+        # One person's log for a day, in time order — the admin page's read.
+        IndexModel(
+            [("user_id", ASCENDING), ("date", ASCENDING), ("at", ASCENDING)],
+            name="app_event_user_day",
+        ),
+        # Lines older than the retention period go by themselves.
+        IndexModel(
+            [("at", ASCENDING)], name="app_event_expiry", expireAfterSeconds=90 * 24 * 3600
+        ),
+    ],
     Collections.AUDIT_LOGS: [
         IndexModel([("at", DESCENDING)], name="audit_recent"),
         IndexModel([("entity", ASCENDING), ("entity_id", ASCENDING)], name="audit_entity"),
