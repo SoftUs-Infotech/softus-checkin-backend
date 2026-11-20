@@ -8,6 +8,7 @@
   while the app keeps checking in — except for time with the screen locked.
 - Switching somebody to work from home while punched in ends that session at
   the switch, not at its start.
+- Ten minutes with no keyboard or mouse use ends the session at the last use.
 """
 
 from datetime import timedelta
@@ -138,6 +139,64 @@ async def test_a_setting_turned_off_ends_the_session_when_the_screen_was_last_se
     # Logged when it happened (now), saying where the session ended (2 min ago).
     [auto] = [m for m in messages if m.startswith("Punched out automatically")]
     assert auto.startswith("Punched out automatically — a setting was turned off (session ended ")
+
+
+async def test_ten_idle_minutes_end_the_session_at_the_last_use(admin_client, api_prefix, db):
+    client, user_id = await _punched_in_from_home(admin_client, api_prefix, "idle@example.com")
+    client.headers.update(MAC_APP)
+    await _move_session_start(db, user_id, utc_now() - timedelta(hours=1))
+    last_use = utc_now() - timedelta(minutes=10, seconds=5)
+    try:
+        stopped = await client.post(
+            f"{api_prefix}/screenshots/stopped",
+            json={"reason": "IDLE", "at": last_use.isoformat()},
+        )
+        assert stopped.status_code == 200, stopped.text
+        [session] = stopped.json()["data"]["sessions"]
+        assert session["closed_detail"] == "IDLE"
+        # The ten idle minutes are not worked.
+        assert session["duration_minutes"] == 49
+    finally:
+        await client.aclose()
+
+    record = await db[Collections.ATTENDANCE].find_one({"user_id": user_id})
+    assert abs((record["sessions"][0]["punch_out"]["at"] - last_use).total_seconds()) < 1
+
+    notice = await db[Collections.NOTIFICATIONS].find_one({"user_id": user_id})
+    assert notice["title"] == "You were punched out"
+    assert notice["body"].endswith(
+        "because your PC was idle for 10 minutes. Please punch in again."
+    )
+
+    messages = [entry["message"] for entry in await _log(admin_client, api_prefix, user_id)]
+    [auto] = [m for m in messages if m.startswith("Punched out automatically")]
+    assert auto.startswith(
+        "Punched out automatically — no keyboard or mouse use for 10 min (session ended "
+    )
+
+
+async def test_the_time_away_after_an_automatic_punch_out_says_why(
+    admin_client, api_prefix, db
+):
+    client, user_id = await _punched_in_from_home(admin_client, api_prefix, "gap@example.com")
+    await _move_session_start(db, user_id, utc_now() - timedelta(hours=1))
+    try:
+        stopped = await client.post(
+            f"{api_prefix}/screenshots/stopped",
+            json={"reason": "IDLE", "at": (utc_now() - timedelta(minutes=30)).isoformat()},
+        )
+        assert stopped.status_code == 200, stopped.text
+        assert (await _upload(client, api_prefix)).status_code == 201
+        again = await client.post(
+            f"{api_prefix}/attendance/punch-in", json={"location": OFFICE_LOCATION}
+        )
+        assert again.status_code == 200, again.text
+        [gap] = again.json()["data"]["breaks"]
+        assert gap["kind"] == "SCREEN_SHARE_STOPPED"
+        assert gap["detail"] == "IDLE"
+        assert gap["minutes"] == 30
+    finally:
+        await client.aclose()
 
 
 async def test_a_last_seen_time_is_never_taken_from_hours_back(admin_client, api_prefix, db):

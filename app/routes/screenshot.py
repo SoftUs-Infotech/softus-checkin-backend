@@ -61,7 +61,8 @@ async def capture_stopped(
 
     The browser sends it when the employee presses "Stop sharing" and as the
     page closes or reloads; the desktop app when its window closes, when a
-    setting it needs was turned off, or when it could not see the screen. Ends
+    setting it needs was turned off, when it could not see the screen, or when
+    nobody used the keyboard or mouse for ten minutes (``IDLE``). Ends
     the open session at the last moment the screen was visible (never earlier
     than two hours ago); nothing open is fine.
     """
@@ -75,8 +76,10 @@ async def capture_stopped(
         current_user,
         at=at,
         reason=payload.reason,
-        notify=payload.reason in ("SETTING_OFF", "SCREEN_NOT_VISIBLE"),
+        notify=payload.reason in ("SETTING_OFF", "SCREEN_NOT_VISIBLE", "IDLE"),
         setting=payload.setting,
+        # Idle: how long nobody used the computer, from the last use to now.
+        minutes=max(1, int((now - at).total_seconds() // 60)) if payload.reason == "IDLE" else None,
     )
     if record is None:
         return success(None, message="Nothing was open.")

@@ -254,14 +254,14 @@ def _breaks_between(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         start, end = to_utc(out), to_utc(later["punch_in"]["at"])
         if end <= start:
             continue
+        ended_by_system = earlier.get("closed_reason") == SCREEN_SHARE_STOPPED
         gaps.append(
             {
                 "start": start,
                 "end": end,
                 "minutes": int((end - start).total_seconds() // 60),
-                "kind": SCREEN_SHARE_STOPPED
-                if earlier.get("closed_reason") == SCREEN_SHARE_STOPPED
-                else "BREAK",
+                "kind": SCREEN_SHARE_STOPPED if ended_by_system else "BREAK",
+                "detail": earlier.get("closed_detail") if ended_by_system else None,
             }
         )
     return gaps
@@ -1249,7 +1249,7 @@ async def end_session_for_capture_loss(
         "device_class": None,
         "platform": None,
         "source": PunchSource.SYSTEM.value,
-        "note": "Screen sharing stopped",
+        "note": "PC idle" if reason == app_log.IDLE else "Screen sharing stopped",
     }
     result = await _attendance().update_one(
         # Only if still open: the browser's report and the server's own check
@@ -1269,7 +1269,7 @@ async def end_session_for_capture_loss(
         return await recompute_day(user["id"], day, user=user)
 
     logger.info(
-        "%s punched out at %s: screen sharing stopped (%s)",
+        "%s punched out automatically at %s (%s)",
         user["email"],
         ended.isoformat(),
         reason,
@@ -1287,11 +1287,16 @@ async def end_session_for_capture_loss(
         # *that* they were punched out (and, for a setting, to allow it): the
         # reason is for the administrator, on their day and in the app log.
         then = f"{to_org_tz(ended):%H:%M}"
-        body = (
-            f"You were punched out at {then}. Please allow the setting and punch in again."
-            if reason == app_log.SETTING_OFF
-            else f"You were punched out at {then}. Please punch in again."
-        )
+        if reason == app_log.SETTING_OFF:
+            body = f"You were punched out at {then}. Please allow the setting and punch in again."
+        elif reason == app_log.IDLE:
+            idle = minutes or 1
+            body = (
+                f"You were punched out at {then} because your PC was idle for "
+                f"{idle} minute{'' if idle == 1 else 's'}. Please punch in again."
+            )
+        else:
+            body = f"You were punched out at {then}. Please punch in again."
         await notification_service.notify(
             user["id"],
             type=NotificationType.ATTENDANCE_ADJUSTED,

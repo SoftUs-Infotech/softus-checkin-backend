@@ -61,7 +61,8 @@ class SessionOut(BaseModel):
     closed_reason: str | None = None
     #: Which loss it was, when ``closed_reason`` is set: ``SETTING_OFF``,
     #: ``SCREEN_NOT_VISIBLE``, ``NO_SCREENSHOTS``, ``NO_CHECKINS``, ``APP_CLOSED``,
-    #: ``SHARING_STOPPED`` or ``WORK_MODE_CHANGED``. The app picks its popup by it.
+    #: ``SHARING_STOPPED``, ``WORK_MODE_CHANGED`` or ``IDLE`` (nobody used the
+    #: keyboard or mouse for ten minutes). The app picks its popup by it.
     closed_detail: str | None = None
     duration_minutes: int = 0
 
@@ -76,6 +77,8 @@ class BreakOut(BaseModel):
     #: when the system punched somebody working from home out because their
     #: screen stopped being shared — time away, but not a break they chose.
     kind: str = "BREAK"
+    #: For ``SCREEN_SHARE_STOPPED``: the session's ``closed_detail`` (``IDLE``, …).
+    detail: str | None = None
 
 
 class AttendanceDayOut(BaseModel):

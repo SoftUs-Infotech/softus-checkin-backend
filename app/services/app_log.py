@@ -42,6 +42,7 @@ NO_CHECKINS = "NO_CHECKINS"
 APP_CLOSED = "APP_CLOSED"
 SHARING_STOPPED = "SHARING_STOPPED"
 WORK_MODE_CHANGED = "WORK_MODE_CHANGED"
+IDLE = "IDLE"
 
 _REASON_TEXT = {
     SETTING_OFF: "a setting was turned off",
@@ -51,6 +52,7 @@ _REASON_TEXT = {
     APP_CLOSED: "the app was closed",
     SHARING_STOPPED: "screen sharing stopped (page closed or sharing ended)",
     WORK_MODE_CHANGED: "switched to work from home while punched in",
+    IDLE: "no keyboard or mouse use for {minutes} min",
 }
 
 #: Detail keys an app may send, and how long a text value may be.

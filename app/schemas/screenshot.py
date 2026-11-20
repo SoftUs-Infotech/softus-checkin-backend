@@ -35,11 +35,12 @@ class CaptureStoppedIn(BaseModel):
     ``SHARING_STOPPED`` now.
     """
 
-    reason: Literal["SETTING_OFF", "SCREEN_NOT_VISIBLE", "APP_CLOSED", "SHARING_STOPPED"] = (
-        "SHARING_STOPPED"
-    )
-    #: The last moment the screen was known to be visible. Defaults to now; a
-    #: moment before the session started counts as its start.
+    reason: Literal[
+        "SETTING_OFF", "SCREEN_NOT_VISIBLE", "IDLE", "APP_CLOSED", "SHARING_STOPPED"
+    ] = "SHARING_STOPPED"
+    #: The last moment the screen was known to be visible (``IDLE``: the last
+    #: use of the keyboard or mouse). Defaults to now; a moment before the
+    #: session started counts as its start.
     at: AwareDatetime | None = None
     #: Which setting, for ``SETTING_OFF``: ``screen`` or ``input``.
     setting: Literal["screen", "input"] | None = None
